@@ -36,9 +36,48 @@ python src/narrate_book.py            # writes output/xtts/audiobook.mp3
 ```
 
 ### Local — F5-TTS (separate venv, needs transformers 5.x)
+F5-TTS needs `transformers 5.x`, which conflicts with the XTTS/coqui stack in your system Python.
+Keep it isolated in its own virtual environment (`.venv-f5`):
 ```powershell
+cd D:\workspace\Havvay\reading
+
+# 1. Create the venv (one-time)
+python -m venv .venv-f5
+
+# 2. Install F5 into it (use the venv's own python)
+.venv-f5\Scripts\python.exe -m pip install "torch==2.11.0" "torchaudio==2.11.0"
+.venv-f5\Scripts\python.exe -m pip install f5-tts soundfile
+
+# 3. Run the pipeline with the venv's python
 .venv-f5\Scripts\python.exe src/narrate_book_f5.py   # writes output/f5/audiobook.mp3
 ```
+> Note: F5 on CPU is ~16× realtime (slow). It's here for quality comparison; use the CosyVoice Colab notebook for the full book.
+
+## Virtual environments (venv)
+A **venv** is an isolated Python environment — its own `python.exe` and its own `site-packages` —
+so one project's dependencies can't clash with another's. This repo uses two environments:
+
+| Environment | Used by | Key dependency |
+|-------------|---------|----------------|
+| System Python | XTTS-v2 (`narrate_book.py`), ElevenLabs demo | `transformers 4.57.6`, `coqui-tts` |
+| `.venv-f5` (in-project, git-ignored) | F5-TTS (`narrate_book_f5.py`) | `transformers 5.x`, `f5-tts` |
+
+The whole trick is **which `python.exe` you call**:
+- `python …` → system Python (XTTS env)
+- `.venv-f5\Scripts\python.exe …` → the F5 env
+
+Create → install → run (all with the venv's own python — see the F5 section above).
+Optionally **activate** it instead, so plain `python` maps to the venv for the shell session:
+```powershell
+.venv-f5\Scripts\Activate.ps1     # prompt shows (.venv-f5); "python" now = venv python
+python src/narrate_book_f5.py
+deactivate                        # exit when done
+```
+(If PowerShell blocks activation: `Set-ExecutionPolicy -Scope Process RemoteSigned` once.)
+
+> A venv **can't be moved** after creation (it bakes in absolute paths). If you relocate the
+> project, delete `.venv-f5` and recreate it with the 3 steps above. Venvs are git-ignored on
+> purpose — they're rebuilt from the install commands, not stored in git.
 
 ## Notes
 - Scripts resolve `data/` and `output/` relative to the **project root**, so run them from anywhere.
