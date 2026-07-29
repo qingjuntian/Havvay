@@ -29,7 +29,7 @@ import subprocess
 
 # ----------------------------- CONFIG -----------------------------
 BOOK_FILE       = "data/book.txt"   # UTF-8 text to narrate
-REFERENCE_AUDIO = "data/reference/ref_enhanced.wav" # VoiceFixer-enhanced (denoised + de-muffled, 44.1kHz)
+REFERENCE_AUDIO = "data/reference/ref_f5.wav" # 10s trim of ref_enhanced.wav, matched to REF_TEXT (F5 clips refs to 12s)
 # Transcript of REFERENCE_AUDIO. Providing it skips the Whisper transcription (faster, no ffmpeg-for-ASR).
 # Set to "" to auto-transcribe (needs Whisper + ffmpeg on PATH). MUST match ref.wav if you change it.
 REF_TEXT        = "孩子的成长之路是风雨交加的事实上青春期出现极端情绪是正常的。"
