@@ -2,9 +2,12 @@
 
 Turn a text file (`data/book.txt`) into an audiobook narrated in a **cloned voice**, using free/open-source TTS. Three engines are provided; **CosyVoice** (Colab) currently gives the best Chinese quality.
 
+> 📐 See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the full technique map and pipeline diagram.
+
 ## Structure
 ```
 reading/
+├── ARCHITECTURE.md              # technique map + pipeline diagram (Mermaid)
 ├── src/                         # local Python scripts
 │   ├── narrate_book.py          #   XTTS-v2 pipeline (local, CPU-friendly)
 │   ├── narrate_book_f5.py       #   F5-TTS pipeline (local; run with the F5 venv)
