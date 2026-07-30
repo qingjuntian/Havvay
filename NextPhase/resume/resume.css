@@ -1,0 +1,79 @@
+/* Clean, ATS-friendly resume stylesheet — rendered via headless Chromium */
+* { box-sizing: border-box; }
+
+body {
+  font-family: "Segoe UI", "Helvetica Neue", Arial, "Microsoft YaHei",
+    "PingFang SC", "Segoe UI Emoji", sans-serif;
+  font-size: 10.6px;
+  line-height: 1.42;
+  color: #242a31;
+  margin: 0;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+/* Name */
+h1 {
+  font-size: 25px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: #12243a;
+  margin: 0 0 2px 0;
+}
+
+/* Subtitle line (bold paragraph right after the name) */
+h1 + p {
+  margin: 0 0 5px 0;
+  font-size: 12.5px;
+  line-height: 1.3;
+}
+h1 + p strong { color: #2b579a; font-weight: 600; letter-spacing: 0.2px; }
+
+/* Contact line */
+h1 + p + p {
+  margin: 0 0 2px 0;
+  font-size: 10.2px;
+  color: #4a5560;
+}
+
+a { color: #2b579a; text-decoration: none; }
+
+/* Section headings */
+h2 {
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 1.1px;
+  color: #2b579a;
+  border-bottom: 1.4px solid #2b579a;
+  padding-bottom: 2px;
+  margin: 15px 0 7px 0;
+}
+
+/* Company / role */
+h3 {
+  font-size: 11.8px;
+  font-weight: 700;
+  color: #12243a;
+  margin: 11px 0 1px 0;
+}
+
+/* Date + platform lines under a role */
+h3 + p { margin: 0 0 3px 0; font-size: 10.3px; line-height: 1.35; }
+h3 + p em { color: #667380; font-style: italic; }
+
+/* Sub-group labels inside a role (bold-only paragraphs) */
+p { margin: 4px 0; }
+p > strong:only-child { color: #33475b; }
+
+ul { margin: 3px 0 8px 0; padding-left: 15px; }
+li { margin: 2.6px 0; padding-left: 2px; }
+li::marker { color: #2b579a; }
+
+strong { color: #1a1f24; }
+em { color: #444c54; }
+
+hr { display: none; }
+
+/* Avoid awkward page splits */
+h2, h3 { break-after: avoid; page-break-after: avoid; }
+h3, li { break-inside: avoid; page-break-inside: avoid; }

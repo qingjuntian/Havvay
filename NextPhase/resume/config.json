@@ -1,0 +1,20 @@
+{
+  "stylesheet": [
+    "D:/workspace/Havvay/NextPhase/resume/resume.css"
+  ],
+  "pdf_options": {
+    "format": "A4",
+    "margin": {
+      "top": "14mm",
+      "bottom": "14mm",
+      "left": "16mm",
+      "right": "16mm"
+    },
+    "printBackground": true
+  },
+  "marked_options": {
+    "gfm": true,
+    "breaks": false
+  },
+  "document_title": "Tian Qingjun - Resume"
+}
