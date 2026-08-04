@@ -3,7 +3,7 @@ import puzzle.Puzzle;
 
 /**
  * Estimate Pi via Monte-Carlo sampling of random points in a unit quarter-circle (threaded variant included).
- * NOTE: The active resolve() path is dead-coded (early return); the estimation logic needs fixing.
+ * estimatePi: single-threaded (NUM*10 samples). estimatePi_B: 10 worker threads, then aggregate.
  * Created by qingjuntian on 8/3/16.
  */
 public class EstimatePiPuzzle extends Thread implements Puzzle {
@@ -19,7 +19,8 @@ public class EstimatePiPuzzle extends Thread implements Puzzle {
     @Override
     public void resolve() {
         try {
-            System.out.println(String.format("PI is roughly %.4f", estimatePi()));
+            System.out.println(String.format("PI (single-thread) is roughly %.4f", estimatePi()));
+            System.out.println(String.format("PI (parallel)      is roughly %.4f", estimatePi_B()));
         } catch (Exception e) {
 
         }
@@ -36,28 +37,17 @@ public class EstimatePiPuzzle extends Thread implements Puzzle {
         }
     }
 
-    private <T extends Comparable> int compare(T a, T b) {
-        return b.compareTo(a);
-    }
-
     private double estimatePi() throws InterruptedException {
-        if (true) {
-            return compare("helloa", "helloacb");
-        }
-
-        if (false) {
-            return estimatePi_B();
-        }
-
-        for (int i = 0; i < NUM * 10; i++) {
+        int samples = NUM * 10;
+        int inside = 0;
+        for (int i = 0; i < samples; i++) {
             double x = Math.random();
             double y = Math.random();
             if (x * x + y * y < 1) {
-                total++;
+                inside++;
             }
         }
-
-        return 4.0 * total / (NUM * 10);
+        return 4.0 * inside / samples;      // fraction of unit-square points inside the quarter circle is pi/4
     }
 
     private double estimatePi_B() throws InterruptedException {
@@ -67,8 +57,10 @@ public class EstimatePiPuzzle extends Thread implements Puzzle {
             threads[i] = new EstimatePiPuzzle();
         }
         for (Thread t : threads) {
-            t.start();
-            t.join();
+            t.start();                      // start all workers first ...
+        }
+        for (Thread t : threads) {
+            t.join();                       // ... then wait for them -> they run in parallel
         }
 
         int sum = 0;

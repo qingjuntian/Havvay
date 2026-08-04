@@ -8,11 +8,14 @@ import puzzle.Puzzle;
  * Created by qingjuntian on 7/18/16.
  */
 public class GeoHashPuzzle implements Puzzle {
-    private static final char[] BASE32 = {};
+    private static final char[] BASE32 = "0123456789bcdefghjkmnpqrstuvwxyz".toCharArray();
 
     @Override
     public void resolve() {
-        int[] arr = new int[] {1, 2, 3, 4, 5, 6};
+        int precision = 5;
+        char[] geohash = new char[precision + 1];               // +1 for the trailing terminator
+        encode_geohash(42.6, -5.6, precision, geohash);
+        System.out.println("geohash(42.6, -5.6) = " + new String(geohash, 0, precision));   // -> ezs42
     }
 
     static void encode_geohash(double latitude, double longitude, int precision, char[] geohash) {

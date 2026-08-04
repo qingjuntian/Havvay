@@ -69,27 +69,20 @@ public class PolyPuzzle implements Puzzle {
     }
 
     public boolean isConvex(List<List<Integer>> points) {
-        List<Integer> p0 = points.get(0);
-        List<Integer> p1 = points.get(1);
-        List<Integer> p2 = points.get(2);
-        int product = product(p0, p1, p2);
-        int number = points.size();
-        for (int i = 3; i < number; i++) {
-            List<Integer> p3 = points.get(i);
-            int p = product(p1, p2, p3);
-            if (p * product < 0) return false;
-            product = (product == 0 ? p : product);
-            p1 = p2;
-            p2 = p3;
+        int n = points.size();
+        boolean pos = false, neg = false;
+        for (int i = 0; i < n; i++) {                       // check the turn at every vertex
+            long cross = product(points.get(i), points.get((i + 1) % n), points.get((i + 2) % n));
+            if (cross > 0) pos = true;
+            if (cross < 0) neg = true;
+            if (pos && neg) return false;                   // orientation flipped -> not convex
         }
-        int p = product(p1, p2, p0);
-        if (p * product < 0) return false;
-        return p * product(p2, p0, points.get(1)) >= 0;
+        return true;
     }
 
 
-    private int product(List<Integer> p0, List<Integer> p1, List<Integer> p2) {
-        return (p1.get(0) - p0.get(0)) * (p2.get(1) - p0.get(1)) -
-                (p2.get(0) - p0.get(0)) * (p1.get(1) - p0.get(1));
+    private long product(List<Integer> p0, List<Integer> p1, List<Integer> p2) {
+        return (long) (p1.get(0) - p0.get(0)) * (p2.get(1) - p0.get(1)) -
+                (long) (p2.get(0) - p0.get(0)) * (p1.get(1) - p0.get(1));
     }
 }

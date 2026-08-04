@@ -1,14 +1,14 @@
 package puzzle.math;
 import puzzle.Puzzle;
 
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 
 /**
  * Find the maximum number of points lying on the same straight line.
  * LeetCode: Max Points on a Line
- * NOTE: Implementation incomplete (slope counting is commented out).
+ * Approach: anchor each point i, group the others by GCD-reduced slope dx/dy (direction-normalized),
+ * counting duplicates separately; the best line through i is maxSlopeGroup + duplicates + 1. Time O(n^2).
  */
 public class CoupangPuzzle implements Puzzle {
 
@@ -22,21 +22,39 @@ public class CoupangPuzzle implements Puzzle {
 
 
     public int findMaxPointNumberInSameLine(int[][] points) {
-        if (points == null || points.length < 2) return 0;
-        int max = 2;
-        int len = points.length;
-        sortPointsByX(points);
-        for (int i = 0; i < len; i++) {
-            Map<Double, Integer> rate = new HashMap();
-            for (int j = i + 1; j < len; j++) {
-//                Double k = (points[j][1] - points[i][1]) * 1.0 /
+        if (points == null) return 0;
+        int n = points.length;
+        if (n < 2) return n;
+        int max = 1;
+        for (int i = 0; i < n; i++) {
+            Map<String, Integer> slopes = new HashMap<>();
+            int duplicates = 0;                        // points identical to point i
+            int localMax = 0;                          // largest collinear group through i (among j > i)
+            for (int j = i + 1; j < n; j++) {
+                int dx = points[j][0] - points[i][0];
+                int dy = points[j][1] - points[i][1];
+                if (dx == 0 && dy == 0) {              // same coordinates -> lies on every line through i
+                    duplicates++;
+                    continue;
+                }
+                int g = gcd(Math.abs(dx), Math.abs(dy));
+                dx /= g;
+                dy /= g;
+                if (dx < 0 || (dx == 0 && dy < 0)) {   // normalize direction so opposite slopes share a key
+                    dx = -dx;
+                    dy = -dy;
+                }
+                String slope = dx + "/" + dy;
+                int c = slopes.merge(slope, 1, Integer::sum);
+                localMax = Math.max(localMax, c);
             }
+            max = Math.max(max, localMax + duplicates + 1);   // +1 counts point i itself
         }
         return max;
     }
 
-    private void sortPointsByX(int[][] points) {
-        Arrays.sort(points, (p0, p1) -> p0[0] - p1[0]);
+    private int gcd(int a, int b) {
+        return b == 0 ? a : gcd(b, a % b);
     }
 
 }
