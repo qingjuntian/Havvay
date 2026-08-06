@@ -6,7 +6,9 @@ import java.util.Map;
 
 /**
  * Compare LRU vs LFU eviction under a single abstract cache skeleton.
- * Approach: Per-key access/frequency map; evict the minimum. Simpler but O(n) eviction (scans all keys).
+ * Approach: A single abstract cache skeleton stores values plus one per-key metric map. Concrete
+ * subclasses interpret that metric either as recency (LRU) or frequency (LFU), then evict the key
+ * with the minimum metric by scanning the whole map.
  * Complexity: Time O(n) eviction, Space O(n).
  */
 public class LFUCachePuzzle3 implements Puzzle {
@@ -34,12 +36,19 @@ public class LFUCachePuzzle3 implements Puzzle {
         Map<K, V> valueHash;
         Map<K, Integer> accessMap;
 
+        /**
+         * Create a cache skeleton of fixed capacity.
+         */
         public Cache3(int capacity) {
             this.cap = capacity;
             valueHash = new HashMap<>();
             accessMap = new HashMap<>();
         }
 
+        /**
+         * Return the cached value or null if absent. Subclasses decide how the “access metric”
+         * changes after a successful read.
+         */
         public V get(K key) {
             if (valueHash.containsKey(key)) {
                 increaseAccess(key);
@@ -48,6 +57,10 @@ public class LFUCachePuzzle3 implements Puzzle {
             return null;
         }
 
+        /**
+         * Insert or update one entry. On overflow, subclasses choose the eviction victim via
+         * {@link #removeOld()}.
+         */
         public void set(K key, V value) {
             if (cap == 0) return;
 
@@ -65,11 +78,21 @@ public class LFUCachePuzzle3 implements Puzzle {
         }
 
 
+        /**
+         * Update the subclass-specific metric for a successful access or insertion.
+         */
         abstract void increaseAccess(K key);
 
+        /**
+         * Evict one old entry according to the subclass-specific metric.
+         */
         abstract void removeOld();
     }
 
+    /**
+     * LRU variant: the access metric is an ever-increasing timestamp. The smallest timestamp is the
+     * least recently used key, so eviction scans for the minimum timestamp.
+     */
     class LRUCache<K, V> extends Cache3<K, V> {
 
         public LRUCache(int capacity) {
@@ -103,6 +126,10 @@ public class LFUCachePuzzle3 implements Puzzle {
 
     }
 
+    /**
+     * LFU variant: the access metric is plain frequency count. The lowest frequency key is evicted.
+     * This keeps the code shape simple but still requires O(n) scanning to find the victim.
+     */
     class LFUCache<K, V> extends Cache3<K, V> {
 
         public LFUCache(int capacity) {

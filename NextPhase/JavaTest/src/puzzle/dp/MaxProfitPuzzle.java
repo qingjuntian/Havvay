@@ -15,6 +15,11 @@ public class MaxProfitPuzzle implements Puzzle {
         System.out.println(maxProfit(new int[]{5, 4, 2, 9, 10}));
     }
 
+    /**
+     * At most 2 transactions via the classic local/global DP formulation.
+     * g[j] = best profit with at most j transactions so far;
+     * l[j] = best profit with exactly j transactions where the last one ends today.
+     */
     int maxProfit(int[] prices) {
         if (prices == null || prices.length == 0) return 0;
         int g[] = new int[4];
@@ -30,6 +35,10 @@ public class MaxProfitPuzzle implements Puzzle {
         return g[2];
     }
 
+    /**
+     * Single-transaction helper: track the lowest price seen so far and the best profit from
+     * selling today against that minimum purchase price.
+     */
     int maxProfit2(int[] prices) {
         int lc = prices[0];
         int max = Integer.MIN_VALUE;
@@ -40,8 +49,10 @@ public class MaxProfitPuzzle implements Puzzle {
         return max;
     }
 
-    // At most 2 transactions — buy/sell state machine (the standard, intuitive formulation).
-    // O(n) time, O(1) space. Equivalent to maxProfit() above, but each variable is a real state.
+    /**
+     * At most 2 transactions — buy/sell state machine (the standard, intuitive formulation).
+     * O(n) time, O(1) space. Equivalent to maxProfit() above, but each variable is a real state.
+     */
     int maxProfit3(int[] prices) {
         if (prices == null || prices.length == 0) return 0;
         int buy1 = Integer.MIN_VALUE, sell1 = 0;
@@ -55,8 +66,10 @@ public class MaxProfitPuzzle implements Puzzle {
         return sell2;
     }
 
-    // General framework — at most k transactions via cash/hold states. O(n*k) time, O(k) space.
-    // Unifies every stock variant (I/II/III/IV). For THIS puzzle, call maxProfit4(prices, 2).
+    /**
+     * General framework — at most k transactions via cash/hold states. O(n*k) time, O(k) space.
+     * Unifies every stock variant (I/II/III/IV). For THIS puzzle, call maxProfit4(prices, 2).
+     */
     int maxProfit4(int[] prices, int k) {
         if (prices == null || prices.length == 0 || k <= 0) return 0;
         int[] hold = new int[k + 1];   // hold[t] = best profit while HOLDING a stock in the t-th transaction

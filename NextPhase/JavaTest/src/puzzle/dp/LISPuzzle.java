@@ -9,6 +9,7 @@ import puzzle.Puzzle;
  * Created by qingjuntian on 12/9/16.
  */
 public class LISPuzzle implements Puzzle {
+    @Override
     public void resolve() {
         int[] arr = new int[]{10, 9, 2, 5, 3, 4, 7, 4, 101, 18};
 
@@ -16,6 +17,9 @@ public class LISPuzzle implements Puzzle {
 
     }
 
+    /**
+     * Classic O(n^2) DP: lisArr[i] = length of the LIS ending exactly at i.
+     */
     private int lis(int[] arr) {
         if (arr == null || arr.length == 0) return 0;
         int[] lisArr = new int[arr.length];
@@ -36,6 +40,10 @@ public class LISPuzzle implements Puzzle {
         return max;
     }
 
+    /**
+     * Older O(n log n) tails-array attempt kept for study. The cleaner, preferred version in this
+     * file is {@link #lis3(int[])}.
+     */
     private int lis2(int[] arr) {
         if (arr == null || arr.length == 0) return 0;
         int[] lisArr = new int[arr.length];
@@ -64,6 +72,10 @@ public class LISPuzzle implements Puzzle {
         return max;
     }
     
+    /**
+     * Preferred O(n log n) patience-sorting / tails solution. lis[i] stores the minimum possible
+     * tail value of any increasing subsequence of length i+1 seen so far.
+     */
     public int lis3(int[] arr) {
         int max = 0;
         int[] lis = new int[arr.length];

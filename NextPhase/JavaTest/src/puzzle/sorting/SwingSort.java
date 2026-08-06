@@ -4,9 +4,11 @@ import puzzle.Puzzle;
 /**
  * Experimental sorting routine (calls quicksort, then an unfinished 'swing' pass).
  * NOTE: Incomplete; not a valid standalone algorithm.
- * Created by qingjuntian on 6/27/16.
  */
 public class SwingSort implements Puzzle {
+    /**
+     * Run the placeholder demo on an empty sample array.
+     */
     @Override
     public void resolve() {
         int[] numbers = new int[]{};
@@ -15,13 +17,11 @@ public class SwingSort implements Puzzle {
         printNumArray(numbers);
     }
 
+    /**
+     * Sort the input first; the intended post-processing step was never finished, so this currently
+     * behaves as a thin wrapper around quicksort.
+     */
     private void swingSort(int[] numbers) {
         QuickSort.qsort(numbers, 0, numbers.length - 1);
-
-        int low = 0, high = numbers.length - 1;
-        if ((numbers.length & 1) == 1) {
-            low ++;
-            high --;
-        }
     }
 }

@@ -4,14 +4,14 @@ import puzzle.Puzzle;
 /**
  * Probe how many threads the JVM/OS can create before resource exhaustion.
  * NOTE: Thread stress test, not an algorithm.
- * Created by qingjuntian on 6/29/16.
  */
 public class ThreadNumber implements Puzzle {
+    /**
+     * Continuously create sleeping threads until the runtime refuses more of them.
+     */
     @Override
     public void resolve() {
         int i = 0;
-
-        String s;
 
         try {
             while (true) {
@@ -24,7 +24,7 @@ public class ThreadNumber implements Puzzle {
                         try {
                             Thread.sleep(Long.MAX_VALUE);
                         } catch (InterruptedException e) {
-                            e.printStackTrace();
+                            Thread.currentThread().interrupt();
                         }
                     }
                 }, "Thread " + i);

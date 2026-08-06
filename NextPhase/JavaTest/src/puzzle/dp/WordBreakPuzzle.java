@@ -31,9 +31,13 @@ public class WordBreakPuzzle implements Puzzle {
         System.out.println(wordBreakDP(b, dict));
     }
 
+    /**
+     * Recursive formulation: try every dictionary word that matches the current prefix.
+     * This version is conceptually simple but may repeat the same suffix subproblems many times.
+     */
     public boolean wordBreak(String s, Set<String> dict) {
-        if (s.length() == 0) return true;
-        for (String a : dict) {
+if (s.length() == 0) return true;
+for (String a : dict) {
             if (s.startsWith(a)) {
                 if (wordBreak(s.substring(a.length()), dict)) return true;
             }
@@ -41,6 +45,10 @@ public class WordBreakPuzzle implements Puzzle {
         return false;
     }
 
+    /**
+     * Boolean prefix DP. t[i] means the prefix s[0..i) can be segmented into dictionary words.
+     * Once t[i] is true, every dictionary word is tested as the next segment starting at i.
+     */
     public boolean wordBreakDP(String s, Set<String> dict) {
         boolean[] t = new boolean[s.length() + 1];
         t[0] = true;//set first to be true, why?

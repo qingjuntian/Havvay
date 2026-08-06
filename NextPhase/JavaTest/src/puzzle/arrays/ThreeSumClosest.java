@@ -7,18 +7,27 @@ import java.util.Arrays;
 /**
  * Find the triplet whose sum is closest to a target.
  * LeetCode: 3Sum Closest
- * Approach: Sort, then a fixed index + two pointers, tracking the closest sum on every step.
+ * Approach: Sort, then fix one index and move two pointers on the suffix. Every probe can improve
+ * the best answer, so the closest sum is updated on every step, not just on exact hits.
  * Complexity: Time O(n^2), Space O(1).
- * Created by qingjuntian on 7/26/16.
  */
 public class ThreeSumClosest implements Puzzle {
 
+    /**
+     * Print the closest triplet sum for a small sample input.
+     */
     @Override
     public void resolve() {
-        System.out.println(threeSumClosest(new int[] {1,20,30,60,100}, 150));
+        System.out.println(threeSumClosest(new int[] {1, 20, 30, 60, 100}, 150));
     }
 
+    /**
+     * Return the triplet sum whose distance to {@code target} is minimal.
+     */
     public int threeSumClosest(int[] nums, int target) {
+        if (nums == null || nums.length < 3) {
+            throw new IllegalArgumentException("Need at least three numbers.");
+        }
 
         Arrays.sort(nums);
         int closest = nums[0] + nums[1] + nums[2];   // seed with a real triplet sum (assumes n >= 3);
@@ -45,6 +54,4 @@ public class ThreeSumClosest implements Puzzle {
         }
         return closest;
     }
-
-
 }

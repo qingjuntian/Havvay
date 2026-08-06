@@ -8,9 +8,12 @@ import java.util.*;
  * LeetCode: K-diff Pairs in an Array
  * Approach: Frequency map + set; k==0 needs a count >= 2, k>0 needs value+k to exist.
  * Complexity: Time O(n), Space O(n).
- * Created by qingjuntian on 12/9/16.
  */
 public class KDiffPair2Puzzle implements Puzzle {
+    /**
+     * Print the number of distinct pairs found in the sample input.
+     */
+    @Override
     public void resolve() {
         int[] arr = new int[]{3, 1, 4, 1, 5, 6, 6};
         int k = 0;
@@ -18,17 +21,29 @@ public class KDiffPair2Puzzle implements Puzzle {
 
     }
 
-    class Pair {
-        int m, n;
+    /**
+     * Simple value-pair holder for demo output.
+     */
+    static class Pair {
+        final int m;
+        final int n;
+
         Pair(int a, int b) {
-            this.m = a;
-            this.n = b;
+            m = a;
+            n = b;
         }
     }
+
+    /**
+     * Frequency-map solution. For k==0, keep values whose count is at least 2; for k>0, keep each
+     * distinct x such that x+k also exists in the map.
+     */
     private List<Pair> kDiffPair(int[] arr, int k) {
-        List<Pair> ret = new LinkedList();
-        if (arr == null || arr.length < 2) return ret;
-        Map<Integer, Integer> countMap = new HashMap();
+        List<Pair> ret = new LinkedList<>();
+        if (arr == null || arr.length < 2) {
+            return ret;
+        }
+        Map<Integer, Integer> countMap = new HashMap<>();
         Set<Integer> distinct = new HashSet<>();
         for (int n : arr) {
             distinct.add(n);
@@ -40,7 +55,7 @@ public class KDiffPair2Puzzle implements Puzzle {
         }
 
         for (int n : distinct) {
-            if (k == 0 ) {
+            if (k == 0) {
                 if (countMap.get(n) > 1) {
                     ret.add(new Pair(n, n));
                 }
@@ -51,8 +66,5 @@ public class KDiffPair2Puzzle implements Puzzle {
             }
         }
         return ret;
-
     }
-
-
 }

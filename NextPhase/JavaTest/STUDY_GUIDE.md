@@ -27,65 +27,56 @@ Puzzles are grouped by **primary technique** into sub-packages under `src/puzzle
 
 | Folder | Files |
 |--------|-------|
-| `arrays/` (11) | Sum2Puzzle, ThreeSumPuzzle, ThreeSumClosest, KDiffPairPuzzle, KDiffPair2Puzzle, SortColorPuzzle, NextPermutation, BalanceArrayPuzzle, RoundArrayPuzzle, ArrayPatchPuzzle, TranverseArrayPuzzle |
+| `arrays/` (11) | ContainerWithMostWaterPuzzle, ThreeSumPuzzle, ThreeSumClosest, KDiffPairPuzzle, KDiffPair2Puzzle, SortColorPuzzle, NextPermutation, BalanceArrayPuzzle, SumDivisibleByLengthPuzzle, ArrayPatchPuzzle, JumpReachabilityPuzzle |
 | `strings/` (4) | LongestDistSubString, LongestDistSubString2, DedupStringPuzzle, ParamParsePuzzle |
-| `dp/` (10) | AlphabetParser, LISPuzzle, LongestSubSequence, LongestSubString, MaxSubArrPuzzle, MaxProfitPuzzle, WordBreakPuzzle, PalindromePuzzle, TwoEggPuzzle, RussianPoll |
-| `backtracking/` (5) | QueenPuzzle, PPuzzle, BeautifulPuzzle, Sudoku, EmotibotPuzzle |
+| `dp/` (10) | AlphabetParser, LISPuzzle, LongestCommonSubsequencePuzzle, LongestCommonSubstringPuzzle, MaxSubArrPuzzle, MaxProfitPuzzle, WordBreakPuzzle, PalindromePuzzle, TwoEggPuzzle, RussianDollEnvelopesPuzzle |
+| `backtracking/` (5) | QueenPuzzle, PermutationsPuzzle, BeautifulPuzzle, Sudoku, ShoppingCartDiscountPuzzle |
 | `binarysearch/` (2) | MedianOfTwoSortedArray, SplitPuzzle |
-| `stack/` (3) | MaxSquarePuzzle, LongestValidaParentheses, CommitStatementPuzzle |
+| `stack/` (3) | LargestRectangleHistogramPuzzle, LongestValidaParentheses, CommitStatementPuzzle |
 | `linkedlist/` (4) | LinkedListPuzzle, SwapPairNode, RemoveDupListNodePuzzle, RightSpinListPuzzle |
 | `graph/` (2) | TreeAncestor, BiSplitGraph |
 | `cache/` (4) | LRUCachePuzzle, LFUCachePuzzle, LFUCachePuzzle2, LFUCachePuzzle3 |
-| `sorting/` (4) | QuickSort, SiftSort, SwingSort, ReverseNum |
-| `math/` (10) | HammingDistancePuzzle, SumWithoutPlus, WythoffPuzzle, Nim2Puzzle, PolyPuzzle, VariancePuzzle, GeoHashPuzzle, EstimatePiPuzzle, CoupangPuzzle, BitSetTest |
+| `sorting/` (4) | QuickSort, HeapSortPuzzle, SwingSort, InversionCountPuzzle |
+| `math/` (10) | HammingDistancePuzzle, SumWithoutPlus, WythoffPuzzle, GridNimPuzzle, PolyPuzzle, VariancePuzzle, GeoHashPuzzle, EstimatePiPuzzle, MaxPointsOnLinePuzzle, BitSetTest |
 | `concurrency/` (4) | ThreadNumber, MultiPortEcho, NioPuzzle, IpLocPuzzle |
 | `misc/` (2) | SugerPuzzle, RegexPuzzle |
 
 > A few puzzles are filed by *primary* technique even though a pattern section below references them
-> elsewhere: `MaxSquarePuzzle` & `LongestValidaParentheses` live in `stack/` (also cited under DP),
-> `CoupangPuzzle` in `math/` (cited under graphs), `ArrayPatchPuzzle` in `arrays/` (cited under
+> elsewhere: `LargestRectangleHistogramPuzzle` & `LongestValidaParentheses` live in `stack/` (also cited under DP),
+> `MaxPointsOnLinePuzzle` in `math/` (cited under graphs), `ArrayPatchPuzzle` in `arrays/` (cited under
 > sorting), `TwoEggPuzzle` in `dp/` (cited under binary search), `RegexPuzzle` in `misc/`.
 
 ---
 
-## ⚠️ Misleading filenames (read this first)
-Several names don't match the actual problem — don't get fooled in a review:
+## ⚠️ Historical / still-misaligned names
+Most of the worst class-name mismatches have now been cleaned up. The items below are the main remaining historical names worth keeping in mind during review:
 
 | File | Name suggests | **Actually is** |
 |------|---------------|-----------------|
-| `MaxSquarePuzzle` | Maximal Square | **Largest Rectangle in Histogram** (monotonic stack) |
-| `ReverseNum` | Reverse an integer | **Count Inversions / Reverse Pairs** (merge sort) |
 | `IpLocPuzzle` | IP geolocation | **NIO file copy** (no algorithm) |
-| `LongestSubString` | Substring w/o repeats | **Longest Common Substring** of two strings (DP) |
 | `LongestDistSubString` | — | Longest substring with **≤ 2 distinct chars** |
 | `LongestDistSubString2` | — | Longest substring **without repeating chars** (brute force) |
-| `LongestSubSequence` | — | **Longest Common Subsequence** (not substring) |
-| `Sum2Puzzle` | Two Sum | active path is **Container With Most Water** |
-| `RoundArrayPuzzle` | rotation | trivial **sum % length == 0** check |
 | `SugerPuzzle` | — | Java **generics type-erasure** demo (not an algorithm) |
-| `RussianPoll` | — | **Russian Doll Envelopes** (non-standard tree approach) |
 
 ## 🚧 Incomplete / demo / skip
 Don't spend review time here — these are drafts, demos, or Java-API experiments:
-`RegexPuzzle` (regex demo), `CoupangPuzzle` (Max-Points-on-Line, logic commented out),
-`Sudoku` (solver incomplete), `SwingSort` (unfinished), `Nim2Puzzle` (stubbed),
+`RegexPuzzle` (regex demo), `Sudoku` (solver incomplete), `SwingSort` (unfinished),
 `LinkedListPuzzle` (usage demo), `BitSetTest` (API demo), `ThreadNumber` (thread stress test),
-`EstimatePiPuzzle` (dead-code early return), `NioPuzzle`/`IpLocPuzzle` (NIO file-copy),
-`SumWithoutPlus.hate49()` (buggy side experiment — the `sum()` bit-add is fine).
+`NioPuzzle`/`IpLocPuzzle` (NIO file-copy).
 
 ---
 
 ## Pattern recognition cheat sheet
 | If you see… | Reach for… | Puzzles |
 |-------------|-----------|---------|
-| Sorted array, find pair/triplet | **Two pointers** | Sum2, ThreeSum, ThreeSumClosest, KDiffPair |
+| Sorted array, find pair/triplet | **Two pointers** | ContainerWithMostWaterPuzzle, ThreeSumPuzzle, ThreeSumClosest, KDiffPairPuzzle |
 | "Longest/shortest substring with property" | **Sliding window** | LongestDistSubString, LongestDistSubString2 |
-| "Minimize the max / maximize the min" | **Binary search on the answer** | SplitPuzzle, TwoEgg |
-| Optimal over subsequences/partitions | **DP** | LIS, LCS, WordBreak, MaxSubArr, MaxProfit, Regex, AlphabetParser |
-| "All arrangements / place items w/ constraints" | **Backtracking** | Queen, Permutations(PPuzzle), Beautiful, Sudoku |
-| "Next greater/smaller", histogram | **Monotonic stack** | MaxSquare(histogram), LongestValidParens |
+| "Minimize the max / maximize the min" | **Binary search on the answer** | SplitPuzzle, TwoEggPuzzle |
+| Optimal over subsequences/partitions | **DP** | LISPuzzle, LongestCommonSubsequencePuzzle, WordBreakPuzzle, MaxSubArrPuzzle, MaxProfitPuzzle, RegexPuzzle, AlphabetParser |
+| "All arrangements / place items w/ constraints" | **Backtracking** | QueenPuzzle, PermutationsPuzzle, BeautifulPuzzle, Sudoku |
+| "Next greater/smaller", histogram | **Monotonic stack** | LargestRectangleHistogramPuzzle, LongestValidaParentheses |
 | O(1) get/put with eviction | **HashMap + linked structure** | LRUCache, LFUCache |
-| Count pairs out of order | **Merge sort** | ReverseNum |
+| Count pairs out of order | **Merge sort** | InversionCountPuzzle |
 | 2-colorable / shortest unweighted | **BFS** | BiSplitGraph |
 | Tree "both sides contain target" | **Postorder recursion** | TreeAncestor (LCA) |
 
@@ -94,7 +85,7 @@ Don't spend review time here — these are drafts, demos, or Java-API experiment
 ## 1. Two pointers (Tier 1) — `puzzle/arrays/`
 | Puzzle | Problem | Time/Space | Key insight |
 |--------|---------|-----------|-------------|
-| `Sum2Puzzle` | Container With Most Water (+ Two Sum helper) | O(n)/O(1) | Move the **shorter** wall inward |
+| `ContainerWithMostWaterPuzzle` | Container With Most Water (+ Two Sum helper) | O(n)/O(1) | Move the **shorter** wall inward |
 | `ThreeSumPuzzle` | 3Sum = 0, unique triplets | O(n²)/O(1) | Sort, fix i, two-pointer; **skip duplicates** |
 | `ThreeSumClosest` | Triplet sum closest to target | O(n²)/O(1) | Track best on **every** step |
 | `KDiffPairPuzzle` | Pairs with diff k (sort + binary search) | O(n log n) | Normalize `k = abs(k)` |
@@ -150,16 +141,16 @@ while (lo < hi) {
 return lo;
 ```
 
-## 4. Dynamic programming (Tier 1) — `puzzle/dp/` · `MaxSquare`/`LongestValidaParentheses` in `stack/`, `Regex` in `misc/`
+## 4. Dynamic programming (Tier 1) — `puzzle/dp/` · `LargestRectangleHistogramPuzzle`/`LongestValidaParentheses` in `stack/`, `RegexPuzzle` in `misc/`
 | Puzzle | Problem | Time/Space | Key insight |
 |--------|---------|-----------|-------------|
 | `MaxSubArrPuzzle` | Maximum subarray (+ indices) | O(n)/O(n) | Kadane; suffix-DP variant here |
 | `MaxProfitPuzzle` | Best time to buy/sell stock | O(n)/O(1) | `maxProfit2` = track running min |
 | `LISPuzzle` | Longest increasing subseq | O(n log n) | **Patience/tails** + binary search |
-| `LongestSubSequence` | Longest **common** subsequence | O(mn)/O(mn) | Match→diagonal+1, else max(top,left) |
-| `LongestSubString` | Longest **common substring** | O(mn)/O(n) | Update DP row **backwards**; reset on mismatch |
+| `LongestCommonSubsequencePuzzle` | Longest **common** subsequence | O(mn)/O(mn) | Match→diagonal+1, else max(top,left) |
+| `LongestCommonSubstringPuzzle` | Longest **common substring** | O(mn)/O(n) | Update DP row **backwards**; reset on mismatch |
 | `WordBreakPuzzle` | Segment into dict words | O(n·d·k)/O(n) | `t[0]=true` seed |
-| `MaxSquarePuzzle` | **Largest rectangle in histogram** | O(n)/O(n) | Monotonic increasing stack |
+| `LargestRectangleHistogramPuzzle` | **Largest rectangle in histogram** | O(n)/O(n) | Monotonic increasing stack |
 | `AlphabetParser` | Decode Ways (1→A…26→Z) | O(n)/O(1) | **Zero handling** is the trap |
 | `RegexPuzzle`* | Regex/wildcard matching | — | *demo only; real DP is `dp[i][j]` on `*`/`.` |
 | `PalindromePuzzle` | Longest palindromic substring | O(n²)/O(n²) | Base cases len 1 & 2 first |
@@ -179,10 +170,10 @@ for (int i = 1; i <= m; i++)
 | Puzzle | Problem | Time/Space | Key insight |
 |--------|---------|-----------|-------------|
 | `QueenPuzzle` | N-Queens | O(N!)/O(N) | Diagonals = `row+col` and `row-col` |
-| `PPuzzle` | All permutations | O(n·n!)/O(n) | **Swap back** to restore state |
+| `PermutationsPuzzle` | All permutations | O(n·n!)/O(n) | **Swap back** to restore state |
 | `BeautifulPuzzle` | Beautiful Arrangement | O(n!)/O(n) | Divisibility test = the pruning rule |
 | `Sudoku`* | Sudoku solver | — | *incomplete; practice full backtracking |
-| `EmotibotPuzzle` | Min leftover after removing discount sets | exp. | Brute-force subset search |
+| `ShoppingCartDiscountPuzzle` | Min leftover after removing discount sets | exp. | Multiset backtracking; memoized state search is faster |
 
 **Template — backtracking (permutations via swap)**
 ```java
@@ -199,7 +190,7 @@ void permute(int[] a, int k) {
 ## 6. Monotonic stack (Tier 1) — `puzzle/stack/`
 | Puzzle | Problem | Time/Space | Key insight |
 |--------|---------|-----------|-------------|
-| `MaxSquarePuzzle` | Largest rectangle in histogram | O(n)/O(n) | Pop when bar lower; width from new top |
+| `LargestRectangleHistogramPuzzle` | Largest rectangle in histogram | O(n)/O(n) | Pop when bar lower; width from new top |
 | `LongestValidaParentheses` | Longest valid parens | O(n)/O(n) | Keep indices; stitch adjacent blocks |
 
 **Template — monotonic increasing stack (histogram)**
@@ -232,12 +223,12 @@ ListNode prev = dummy;
 return dummy.next;
 ```
 
-## 8. Trees & graphs (Tier 1) — `puzzle/graph/` · `CoupangPuzzle` in `math/`
+## 8. Trees & graphs (Tier 1) — `puzzle/graph/` · `MaxPointsOnLinePuzzle` in `math/`
 | Puzzle | Problem | Time/Space | Key insight |
 |--------|---------|-----------|-------------|
 | `TreeAncestor` | Lowest Common Ancestor | O(n)/O(h) | Non-null from **both** children ⇒ root is LCA |
 | `BiSplitGraph` | Is graph bipartite? | O(V·E)/O(V) | BFS 2-coloring; conflict ⇒ not bipartite |
-| `CoupangPuzzle`* | Max points on a line | — | *incomplete; slope map keyed by reduced fraction |
+| `MaxPointsOnLinePuzzle` | Max points on a line | O(n²)/O(n) | Anchor one point; group others by GCD-reduced slope |
 
 **Template — LCA (binary tree)**
 ```java
@@ -267,8 +258,8 @@ put:   if full → evict LinkedHashSet at minFreq (eldest); insert freq=1, minFr
 | Puzzle | Problem | Time/Space | Key insight |
 |--------|---------|-----------|-------------|
 | `QuickSort` | In-place quicksort | O(n log n) avg | Leftmost pivot ⇒ sorted input degrades to O(n²) |
-| `SiftSort` | Heapsort | O(n log n)/O(1) | Build max-heap, swap root↔end, sift down |
-| `ReverseNum` | Count inversions / reverse pairs | O(n log n)/O(n) | Count **during merge**: `mid-i+1` per right pick |
+| `HeapSortPuzzle` | Heapsort | O(n log n)/O(1) | Build max-heap, swap root↔end, sift down |
+| `InversionCountPuzzle` | Count inversions / reverse pairs | O(n log n)/O(n) | Count **during merge**: `mid-i+1` per right pick |
 | `ArrayPatchPuzzle` | Patching Array (greedy) | O(n)/O(1) | Invariant: all sums in `[1, upper)` reachable |
 
 **Template — inversion count in merge**
@@ -299,7 +290,7 @@ currently dead-coded).
 ## Suggested 1-week refresh plan
 - **Day 1–2:** Two pointers + Sliding window (rewrite `LongestDistSubString2` as an optimal window).
 - **Day 3:** DP core (LCS/LIS/WordBreak/MaxSubArr) — re-derive each recurrence from scratch.
-- **Day 4:** Backtracking (Queen, Permutations, finish `Sudoku`).
+- **Day 4:** Backtracking (`QueenPuzzle`, `PermutationsPuzzle`, finish `Sudoku`).
 - **Day 5:** Monotonic stack + Binary-search-on-answer (`MaxSquare`, `SplitPuzzle`).
 - **Day 6:** Design (LRU/LFU — implement the **true O(1)** LFU), Merge-sort inversions.
 - **Day 7:** Graphs/trees (LCA, bipartite) + mixed mock set.

@@ -18,6 +18,9 @@ public class PalindromePuzzle implements Puzzle {
 
     }
 
+    /**
+     * Interval-DP solution. table[i][j] is true iff s[i..j] is a palindrome.
+     */
     private String longestPalindromeDP(String s) {
         int n = s.length();
         if (n == 0) return "";
@@ -48,6 +51,9 @@ public class PalindromePuzzle implements Puzzle {
         return s.substring(longestBegin, maxLen + longestBegin);
     }
 
+    /**
+     * Center-expansion helper/demo version. It prints the longest palindrome instead of returning it.
+     */
     private void longestPalindrome(String s) {
         if (s == null || s.length() == 0) return;
 
@@ -64,6 +70,10 @@ public class PalindromePuzzle implements Puzzle {
         System.out.println(s.substring(start, end + 1));
     }
 
+    /**
+     * Expand around one center (and, if applicable, the equal-adjacent double-center case) and
+     * return [start, end] for the best palindrome found around index i.
+     */
     private int[] palindrome(char[] chars, int i) {
         int[] ret = new int[2];
         ret[0] = ret[1] = i;

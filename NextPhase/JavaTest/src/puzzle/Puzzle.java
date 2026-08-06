@@ -1,20 +1,27 @@
 package puzzle;
 
 /**
- * Common interface implemented by every puzzle class; defines resolve().
- * NOTE: Shared interface, not a puzzle itself.
- * Created by qingjuntian on 8/3/16.
+ * Common contract implemented by every puzzle demo in this repository.
+ * <p>
+ * Most classes expose their runnable sample through {@link #resolve()}, while
+ * {@link #printNumArray(int[])} is a small shared helper used by array-based demos.
  */
 public interface Puzzle {
-    default public void resolve() {
+    /**
+     * Run the sample scenario for this puzzle class.
+     */
+    default void resolve() {
         System.out.println("Not implemented yet.");
     }
 
-    default public void printNumArray(int[] array) {
+    /**
+     * Print an integer array on one line for quick console inspection.
+     */
+    default void printNumArray(int[] array) {
         if (array == null || array.length == 0) {
             System.out.println("input array is empty!");
         }
-        for (int item: array) {
+        for (int item : array) {
             System.out.print(item + " ");
         }
         System.out.println();

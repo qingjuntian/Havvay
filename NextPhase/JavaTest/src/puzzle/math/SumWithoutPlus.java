@@ -17,11 +17,18 @@ public class SumWithoutPlus implements Puzzle {
         System.out.println("hate49(600) = " + hate49(600));      // 600th number with no digit 4 or 9 -> 1130
     }
 
+    /**
+     * Recursive bitwise addition. XOR computes the sum bits without carry; (AND << 1) computes the
+     * carry bits. Recurse until the carry becomes zero.
+     */
     private int sum(int a, int b) {
         if (a == 0) return b;
         return sum(((a&b) << 1), a^b);
     }
 
+    /**
+     * Return the nth positive integer whose decimal representation contains neither digit 4 nor 9.
+     */
     private int hate49(int n) {
         int i = 0;
         int ret = 0;
@@ -32,6 +39,9 @@ public class SumWithoutPlus implements Puzzle {
         return ret;
     }
 
+    /**
+     * Return true iff the decimal representation contains digit 4 or digit 9.
+     */
     private boolean is49(int i) {
         String s = "" + i;
         return s.contains("4") || s.contains("9");

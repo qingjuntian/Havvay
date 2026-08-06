@@ -7,7 +7,8 @@ import java.util.List;
 /**
  * Find all unique triplets that sum to zero.
  * LeetCode: 3Sum
- * Approach: Sort, fix one element, two-pointer scan, and skip duplicates.
+ * Approach: Sort, fix one element, then use a two-pointer scan on the suffix. Duplicate skipping
+ * happens at the outer index and again whenever the left/right pointer moves past equal values.
  * Complexity: Time O(n^2), Space O(log n).
  */
 public class ThreeSumPuzzle implements Puzzle {
@@ -19,6 +20,9 @@ public class ThreeSumPuzzle implements Puzzle {
         System.out.println(ret);
     }
 
+    /**
+     * Return all distinct triplets [a, b, c] such that a + b + c == 0.
+     */
     public List<List<Integer>> threeSum(int[] nums) {
         List<List<Integer>> ret = new ArrayList<List<Integer>>();
 
@@ -61,6 +65,9 @@ public class ThreeSumPuzzle implements Puzzle {
         return ret;
     }
 
+    /**
+     * In-place quicksort used by the puzzle's original implementation before the two-pointer scan.
+     */
     public void qSort(int[] array, int l, int h) {
         if (l >= h)
             return;

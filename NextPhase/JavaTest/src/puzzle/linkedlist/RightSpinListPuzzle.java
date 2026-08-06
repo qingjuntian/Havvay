@@ -1,8 +1,4 @@
-package puzzle.linkedlist; /**
- * Created by qingjuntian on 7/26/16.
- * Right spin the given list. For example given list is 1, 2, 3, 4, and given a number 3.
- * the return list should be 2, 3, 4, 1
- */
+package puzzle.linkedlist;
 
 import puzzle.Puzzle;
 import model.Node;
@@ -12,9 +8,14 @@ import model.Node;
  * LeetCode: Rotate List
  * Approach: Form a cycle, walk to the new tail (k %= length), then break the cycle.
  * Complexity: Time O(n), Space O(1).
+ * Example: 1 -> 2 -> 3 -> 4 rotated right by 1 becomes 4 -> 1 -> 2 -> 3.
+ * (Equivalently, rotating right by 3 becomes 2 -> 3 -> 4 -> 1.)
  */
 public class RightSpinListPuzzle implements Puzzle {
 
+    /**
+     * Build a sample list, rotate it, and print both before/after forms.
+     */
     @Override
     public void resolve() {
         int[] array = new int[]{6, 5, 4, 3, 2, 1};
@@ -31,29 +32,34 @@ public class RightSpinListPuzzle implements Puzzle {
         head.debug();
     }
 
-    private Node rightSpin(Node head, int i) {
-        if (head == null || head.next == null || i <= 0) {
+    /**
+     * Rotate the list to the right by {@code k} positions.
+     */
+    private Node rightSpin(Node head, int k) {
+        if (head == null || head.next == null || k <= 0) {
             return head;
         }
 
-        Node node = head;
-        int num = 1;
-        while (node.next != null) {
-            node = node.next;
-            num++;
+        Node tail = head;
+        int len = 1;
+        while (tail.next != null) {
+            tail = tail.next;
+            len++;
         }
 
-        i = (i - 1) % num;
-        node.next = head;
-
-        for (int k = 0; k < i; k++) {
-            head = head.next;
+        k %= len;
+        if (k == 0) {
+            return head;
         }
 
-        Node next = head.next;
-        head.next = null;
-
-        return next;
+        tail.next = head;                              // form a cycle
+        int stepsToNewTail = len - k - 1;             // new head is one step after the new tail
+        Node newTail = head;
+        for (int step = 0; step < stepsToNewTail; step++) {
+            newTail = newTail.next;
+        }
+        Node newHead = newTail.next;
+        newTail.next = null;                          // break the cycle
+        return newHead;
     }
-
 }

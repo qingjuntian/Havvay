@@ -25,6 +25,11 @@ public class LongestValidaParentheses implements Puzzle {
 
     }
 
+    /**
+     * DP + stack-stitch solution. M[i] stores the longest valid substring ending exactly at i.
+     * When the current ')' matches the nearest unmatched '(', the new valid block spans that pair
+     * plus any valid block immediately to the left of the matching '('.
+     */
     public int findLongestValid(String s){
         if (s.length() <= 1){
             return 0;
@@ -47,6 +52,10 @@ public class LongestValidaParentheses implements Puzzle {
         }
         return ans;
     }
+
+    /**
+     * Return true iff positions i and j form a directly matching pair "()".
+     */
     private boolean isValid(char[] input, int i, int j){
         return input[i] == '(' && input[j] == ')';
     }

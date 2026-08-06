@@ -6,24 +6,28 @@ import puzzle.Puzzle;
  * LeetCode: Reverse Pairs / Count Inversions
  * Approach: Merge sort; count (mid-i+1) inversions whenever a right element precedes remaining left elements.
  * Complexity: Time O(n log n), Space O(n).
- * NOTE: Name is misleading -- this counts inversions, it does not reverse an integer.
- * Created by qingjuntian on 7/3/16.
  */
-public class ReverseNum implements Puzzle {
+public class InversionCountPuzzle implements Puzzle {
 
     private int[] temp;
 
+    /**
+     * Count inversions in a sample array and print the result.
+     */
     @Override
     public void resolve() {
         int[] array = {13, 7, 3, 2, 5, 8, 10, 9, 4};
 
-        int reverseNumber = reverseNum(array, 0, array.length - 1);
+        int inversionCount = countInversions(array, 0, array.length - 1);
 
-        System.out.println("reverse number is: " + reverseNumber);
-//        puzzle.LongestSubString.PuzzleUtil.printNumArray(array);
+        System.out.println("inversion count is: " + inversionCount);
     }
 
-    private int reverseNum(int[] array, int low, int high) {
+    /**
+     * Merge-sort-based inversion counting. The recursive halves count their own inversions; the
+     * merge step adds (mid - i + 1) whenever a right-half value precedes the remaining left-half values.
+     */
+    private int countInversions(int[] array, int low, int high) {
         if (array == null || array.length == 0) return 0;
         if (temp == null) {
             temp  = new int[array.length];
@@ -31,8 +35,8 @@ public class ReverseNum implements Puzzle {
         if (low >= high) return 0;
         int mid = low  + (high - low) / 2;
 
-        int left = reverseNum(array, low, mid);
-        int right = reverseNum(array, mid + 1, high);
+        int left = countInversions(array, low, mid);
+        int right = countInversions(array, mid + 1, high);
 
         int i = low, j = mid + 1, cur = low;
         int number = 0;

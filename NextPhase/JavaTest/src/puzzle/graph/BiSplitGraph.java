@@ -1,61 +1,58 @@
 package puzzle.graph;
 import puzzle.Puzzle;
 
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Queue;
-import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.Deque;
+import java.util.List;
 
 /**
- * Determine whether an undirected graph is bipartite (2-colorable).
+ * Determine whether an undirected graph is bipartite (2-colorable), and if so print one valid split.
  * LeetCode: Is Graph Bipartite?
- * Approach: BFS coloring: neighbors get the opposite color; a conflict means not bipartite.
- * Complexity: Time O(V*E), Space O(V).
+ * Approach: Build an adjacency list, then BFS-color every connected component. Each edge must connect
+ * opposite colors; if a conflict appears, the graph is not bipartite. Otherwise the two color sets
+ * are the required split.
+ * Complexity: Time O(V+E), Space O(V+E) for the adjacency list.
  * Created by qingjuntian on 7/20/16.
  */
 public class BiSplitGraph implements Puzzle {
 
     enum Color {
-        BLACK, WHITE, UNKNOW;
+        BLACK, WHITE, UNKNOWN;
     }
 
-    class Vetex {
+    /**
+     * A vertex plus its assigned bipartite color.
+     */
+    class Vertex {
         int id;
         Color color;
-        Vetex(int id) {
+        Vertex(int id) {
             this.id = id;
-            this.color = Color.UNKNOW;
+            this.color = Color.UNKNOWN;
         }
     }
 
+    /**
+     * Simple undirected edge used only to build the adjacency list for the demo graph in resolve().
+     */
     class Edge {
-        Vetex a;
-        Vetex b;
+        Vertex a;
+        Vertex b;
 
-        Edge(Vetex a, Vetex b) {
+        Edge(Vertex a, Vertex b) {
             this.a = a;
             this.b = b;
-        }
-
-        public Vetex peerVetex(Vetex v) {
-
-            if (this.a.id == v.id) {
-                return b;
-            }
-
-            if (this.b.id == v.id) {
-                return a;
-            }
-
-            return null;
         }
     }
 
 
     @Override
     public void resolve() {
-        Vetex[] vetexes = new Vetex[10];
+        Vertex[] vetexes = new Vertex[10];
         for (int i = 0; i < 10; i++) {
-            vetexes[i] = new Vetex(i);
+            vetexes[i] = new Vertex(i);
         }
 
         Edge[] edges = new Edge[8];
@@ -71,47 +68,59 @@ public class BiSplitGraph implements Puzzle {
         splitGraph(vetexes, edges);
     }
 
-    private void splitGraph(Vetex[] vetexes, Edge[] edges) {
-        Queue<Vetex> queue= new ConcurrentLinkedQueue<>();
-        for (Vetex vetex : vetexes) {
-            if (vetex.color == Color.UNKNOW) {
-                vetex.color = Color.BLACK;
-                queue.offer(vetex);
-                while (queue.isEmpty() == false) {
-                    Vetex v = queue.poll();
-                    if (false == enqueueAdjacent(queue, v, edges)) {
-                        System.out.println("the input graph could not be split into two parts");
-                        return;
-                    }
-                }
-            }
+    /**
+     * Color every connected component by BFS and print the two parts if successful.
+     */
+    private void splitGraph(Vertex[] vetexes, Edge[] edges) {
+        if (!isBipartite(vetexes, edges)) {
+            System.out.println("the input graph could not be split into two parts");
+            return;
         }
-
-
 
         Arrays.stream(vetexes).filter(v -> v.color == Color.BLACK).forEach(v -> System.out.print(v.id + "\t"));
         System.out.println();
         Arrays.stream(vetexes).filter(v -> v.color == Color.WHITE).forEach(v -> System.out.print(v.id + "\t"));
-
     }
 
-    private boolean enqueueAdjacent(Queue<Vetex> queue, Vetex v, Edge[] edges) {
-        Color c = Color.BLACK;
-        if (v.color == Color.BLACK) c = Color.WHITE;
-
-        for (Edge edge : edges) {
-            if(edge != null) {
-                Vetex peer = edge.peerVetex(v);
-                if (peer != null) {
-                    if (peer.color == Color.UNKNOW) {
-                        peer.color = c;
+    /**
+     * Return true iff the graph is bipartite. Colors are written back into the vertex array.
+     */
+    private boolean isBipartite(Vertex[] vetexes, Edge[] edges) {
+        List<Vertex>[] graph = buildGraph(vetexes, edges);
+        Deque<Vertex> queue = new ArrayDeque<>();
+        for (Vertex vetex : vetexes) {
+            if (vetex.color != Color.UNKNOWN) continue;
+            vetex.color = Color.BLACK;
+            queue.offer(vetex);
+            while (!queue.isEmpty()) {
+                Vertex v = queue.poll();
+                Color nextColor = (v.color == Color.BLACK) ? Color.WHITE : Color.BLACK;
+                for (Vertex peer : graph[v.id]) {
+                    if (peer.color == Color.UNKNOWN) {
+                        peer.color = nextColor;
                         queue.offer(peer);
-                    } else if (peer.color != c) {
+                    } else if (peer.color != nextColor) {
                         return false;
                     }
                 }
             }
         }
         return true;
+    }
+
+    /**
+     * Build adjacency lists from the demo edge list so each BFS step touches only true neighbors.
+     */
+    private List<Vertex>[] buildGraph(Vertex[] vetexes, Edge[] edges) {
+        List<Vertex>[] graph = new ArrayList[vetexes.length];
+        for (int i = 0; i < vetexes.length; i++) {
+            graph[i] = new ArrayList<>();
+        }
+        for (Edge edge : edges) {
+            if (edge == null) continue;
+            graph[edge.a.id].add(edge.b);
+            graph[edge.b.id].add(edge.a);
+        }
+        return graph;
     }
 }

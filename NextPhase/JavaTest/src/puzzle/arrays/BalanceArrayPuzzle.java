@@ -7,8 +7,13 @@ import java.util.List;
 
 /**
  * Given two equal-length arrays, swap elements to minimize the difference between their sums.
- * Approach: Recursive brute-force / backtracking over swaps.
- * Complexity: Time exponential, Space O(n).
+ * Approaches:
+ *   balanceArray - recursive brute-force / backtracking over swap decisions;
+ *   minDiffDp    - exact-cardinality subset-sum DP with reconstruction of one optimal split.
+ * Complexity:
+ *   brute-force = exponential time, O(n) recursion stack;
+ *   DP          = pseudo-polynomial O(n^2 * S) time / O(n^2 * S) space, where
+ *                 S = sum of absolute values across all 2n numbers.
  */
 public class BalanceArrayPuzzle implements Puzzle {
 
@@ -16,9 +21,6 @@ public class BalanceArrayPuzzle implements Puzzle {
 
     @Override
     public void resolve() {
-//        int[] arr1 = {1, 5, 72, 12, 45, 34, 3, 5, 10};
-//        int[] arr2 = {2, 43, 23, 26, 77, 8, 110, 10, -85};
-//
         int[] arr1 = {1, 2, 7, 6, 43, 17};
         int[] arr2 = {3, 4, 5, 12, 11, -5};
 
@@ -32,6 +34,10 @@ public class BalanceArrayPuzzle implements Puzzle {
 
     }
 
+    /**
+     * Brute-force search over swap decisions. The method recursively decides whether items placed at
+     * the current suffix position should stay or be swapped across the two arrays.
+     */
     private int balanceArray(int[] a, int[] b, int items, int diff) {
         if (items == 0) {
             int d = calculateDiff(a);
@@ -43,7 +49,6 @@ public class BalanceArrayPuzzle implements Puzzle {
             for (int i = 0; i < items; i++) {
                 swap(a, items - 1, i);
                 for (int j = 0; j < items; j++) {
-//                    System.out.println("i: " + i + "; j: " + j);
                     swap(b, items - 1, j);
 
                     diff = balanceArray(a, b, items - 1, diff);
@@ -124,6 +129,9 @@ public class BalanceArrayPuzzle implements Puzzle {
         return best;
     }
 
+    /**
+     * Swap two elements inside one array.
+     */
     private void swap(int[] a, int i, int i1) {
         int temp  = a[i];
         a[i] = a[i1];
@@ -131,11 +139,17 @@ public class BalanceArrayPuzzle implements Puzzle {
     }
 
 
+    /**
+     * Given one side of the partition, compute |sumA - sumB| using the precomputed total sum.
+     */
     private int calculateDiff(int[] arr1) {
         int sum1 = Arrays.stream(arr1).sum();
         return Math.abs((sum1 << 1) - sum);
     }
 
+    /**
+     * Print one best split found by the brute-force search.
+     */
     private void outputBest(int diff, int[] a, int[] b) {
         System.out.println();
         System.out.println("diff: " + diff);
@@ -145,6 +159,9 @@ public class BalanceArrayPuzzle implements Puzzle {
         printNumArray(b);
     }
 
+    /**
+     * Utility printer for integer arrays.
+     */
     public void printNumArray(int[] array) {
         if (array == null || array.length == 0) {
             System.out.println("input array is empty!");

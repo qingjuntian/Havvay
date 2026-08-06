@@ -20,9 +20,19 @@ public class QueenPuzzle implements Puzzle {
         a = new int [2 * n - 1];
         b = new int [2 * n - 1];
         c = new int[n];
+        System.out.println("iterative:");
         placeQueen(n);
+
+        a = new int [2 * n - 1];
+        b = new int [2 * n - 1];
+        c = new int[n];
+        System.out.println("recursive:");
+        placeQueenRecursive(n);
     }
 
+    /**
+     * Iterative/manual-backtracking formulation. room[row] stores the chosen column in that row.
+     */
     private void placeQueen(int n) {
         int[] room = new int[n];
         int i = 0;
@@ -54,6 +64,9 @@ public class QueenPuzzle implements Puzzle {
         }
     }
 
+    /**
+     * Starting from column j in row i, place the next valid queen if possible.
+     */
     private boolean pickNextRoom(int[] room, int i, int j, int n) {
         for (; j < n; j++) {
             if (validRoom(i, j , n)) {
@@ -67,7 +80,51 @@ public class QueenPuzzle implements Puzzle {
         return false;
     }
 
+    /**
+     * O(1) legality check via occupied-column and occupied-diagonal tables.
+     */
     private boolean validRoom(int i, int j, int n) {
         return a[i + j] == 0 && b[n - 1 + i - j] == 0 && c[j] == 0;
+    }
+
+    /**
+     * Recursive DFS/backtracking formulation of the same N-Queens search.
+     */
+    private void placeQueenRecursive(int n) {
+        int[] room = new int[n];
+        if (dfs(room, 0, n)) {
+            String blank = "";
+            for (int j = 0; j < n * 2; j++) {
+                blank += " ";
+            }
+            for (int j = 0; j < n; j++) {
+                System.out.println(blank.substring(0, room[j] * 2) + "*");
+            }
+        } else {
+            System.out.println(n + " queens could not be placed in " + n + "*" + n + " grids.");
+        }
+    }
+
+    /**
+     * Return true once all rows are filled with non-attacking queens.
+     */
+    private boolean dfs(int[] room, int row, int n) {
+        if (row == n) {
+            return true;
+        }
+        for (int col = 0; col < n; col++) {
+            if (!validRoom(row, col, n)) continue;
+            room[row] = col;
+            a[row + col] = 1;
+            b[n - 1 + row - col] = 1;
+            c[col] = 1;
+            if (dfs(room, row + 1, n)) {
+                return true;
+            }
+            a[row + col] = 0;
+            b[n - 1 + row - col] = 0;
+            c[col] = 0;
+        }
+        return false;
     }
 }

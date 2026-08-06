@@ -30,6 +30,10 @@ public class AlphabetParser implements Puzzle {
         System.out.println(String.format("str: %s; number: %d; recur: %d", s, num, recur));
     }
 
+    /**
+     * Right-to-left constant-space DP attempt that treats zeros explicitly while scanning from the
+     * end of the string toward the front.
+     */
     private long parseAlphabetDp(String s) {
         if (s == null || s.length() <= 0) return 0;
         long a = 1;
@@ -63,6 +67,10 @@ public class AlphabetParser implements Puzzle {
         return num;
     }
 
+    /**
+     * Alternate DP attempt that first peels out zero-containing segments, then applies a right-to-left
+     * Fibonacci-style recurrence on zero-free spans.
+     */
     private long parseAlphabetDp2(char[] chars, int l, int r) {
         if (l > r) return 0;
         boolean zeroFlag = false;
@@ -108,6 +116,10 @@ public class AlphabetParser implements Puzzle {
         return num;
     }
 
+    /**
+     * Forward constant-space DP. prev1 = ways for prefix ending at i-1, prev2 = ways for prefix
+     * ending at i-2. This is the cleanest version to study in this file.
+     */
     private int parseAlphabetDp3(char[] chars, int n) {
         if (n <= 0) return 0;
         
@@ -127,6 +139,9 @@ public class AlphabetParser implements Puzzle {
         return prev1;
     }
 
+    /**
+     * Recursive suffix formulation: count decodings of the prefix s[0..end).
+     */
     private int parseAlphabet(String s, int end) {
         recur++;
         int number = 0;
@@ -143,6 +158,9 @@ public class AlphabetParser implements Puzzle {
         return number;
     }
 
+    /**
+     * Check whether taking 1 or 2 digits ending at {@code end} forms a valid decoding.
+     */
     private boolean isValid(String s, int end, int i) {
         if ( i == 1 && s.charAt(end - 1)!= '0') return true;
         if (i == 2 && end >= 2) {
@@ -153,6 +171,9 @@ public class AlphabetParser implements Puzzle {
     }
 
 
+    /**
+     * Recursive prefix formulation: count decodings starting from index {@code start}.
+     */
     private int parseAlphabetFromHead(String s, int start, int length) {
         recur++;
         int number = 0;
@@ -169,6 +190,9 @@ public class AlphabetParser implements Puzzle {
         return number;
     }
 
+    /**
+     * Check whether taking 1 or 2 digits from the head side forms a valid decoding.
+     */
     private boolean isValidFromHead(String s, int start, int i) {
         if ( i == 1 && s.charAt(start) != '0') return true;
         if (i == 2 && start + 2 <= s.length()) {

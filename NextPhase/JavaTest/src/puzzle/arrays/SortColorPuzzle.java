@@ -20,6 +20,11 @@ public class SortColorPuzzle implements Puzzle {
         return;
     }
 
+    /**
+     * One-pass Dutch national flag partition. The interval [0, zero) holds 0s, [zero, cur) holds
+     * 1s, and (second, end] holds 2s. When swapping a 2 to the right, cur is not advanced because
+     * the incoming value at cur has not yet been examined.
+     */
     public void sortColors(int[] nums) {
         if (nums == null || nums.length <= 1) return;
         int zero = 0, second = nums.length - 1;
@@ -36,6 +41,9 @@ public class SortColorPuzzle implements Puzzle {
 
     }
 
+    /**
+     * Swap two array positions in-place.
+     */
     public void swap(int[] arr, int p0, int p1) {
         int temp = arr[p0];
         arr[p0] = arr[p1];

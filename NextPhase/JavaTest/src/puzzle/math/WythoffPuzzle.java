@@ -10,8 +10,9 @@ import java.util.Set;
  * Wythoff's game: two piles; a move takes any positive amount from ONE pile OR an equal amount from
  * BOTH piles; the player taking the last stone wins. The losing (P-)positions are the pairs
  * (a_k, b_k) = (floor(k*phi), floor(k*phi^2)), which also satisfy b_k = a_k + k.
- * wythoffLosingPositions generates them via the mex/gap method; isLosing answers a query in O(1).
- * NOTE: this is Wythoff's game, NOT the trivial LeetCode 292 "Nim Game" (whose answer is n % 4 != 0).
+ * Methods:
+ *   wythoffLosingPositions - generate the P-positions by the mex/gap method;
+ *   isLosing               - answer a position query in O(1) via the golden-ratio test.
  * Created by qingjuntian on 6/12/16.
  */
 public class WythoffPuzzle implements Puzzle {

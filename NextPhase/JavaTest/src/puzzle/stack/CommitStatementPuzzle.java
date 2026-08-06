@@ -35,6 +35,10 @@ public class CommitStatementPuzzle implements Puzzle {
         System.out.println(commitCommand);
     }
 
+    /**
+     * Process the command stream under the chosen transaction semantics and return the surviving
+     * committed commands in their original order.
+     */
     private List<String> findCommitedCommands(List<String> commands) {
         List<String> ret = new LinkedList<>();
         // Stack of open transactions (LIFO). Each buffers its commands; an item is marked
@@ -69,12 +73,19 @@ public class CommitStatementPuzzle implements Puzzle {
         return ret;
     }
 
+    /**
+     * One buffered command inside an open transaction, tagged with whether it has already become
+     * permanently committed.
+     */
     private static final class Item {
         final String cmd;
         boolean committed;
         Item(String cmd, boolean committed) { this.cmd = cmd; this.committed = committed; }
     }
 
+    /**
+     * Normalize command text for the simple transaction parser used by this puzzle.
+     */
     private String normalizeCommand(String command) {
         return command.toLowerCase().trim();
     }

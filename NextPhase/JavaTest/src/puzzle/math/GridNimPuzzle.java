@@ -9,15 +9,18 @@ import puzzle.Puzzle;
  * NOTE: initSafe2 is an incomplete stub (unused); resolve() uses the correct initSafe.
  * Created by qingjuntian on 8/6/16.
  */
-public class Nim2Puzzle implements Puzzle {
+public class GridNimPuzzle implements Puzzle {
 
     @Override
     public void resolve() {
-        nim(5, 7);
+        solveGridNim(5, 7);
     }
 
-
-    private void nim(int m, int n) {
+    /**
+     * Build the P/N-position table for an m x n board and print whether the lower-left corner is a
+     * winning or losing state for the player to move.
+     */
+    private void solveGridNim(int m, int n) {
 
         int[][] safe = initSafe(m, n);
 
@@ -34,6 +37,9 @@ public class Nim2Puzzle implements Puzzle {
         return ret;
     }
 
+    /**
+     * Fill the whole board by dynamic programming on P/N positions.
+     */
     private int[][] initSafe(int m, int n) {
         int ret[][] = new int[m][n];
         ret[0][n - 1] = 1;
@@ -45,6 +51,10 @@ public class Nim2Puzzle implements Puzzle {
         return ret;
     }
 
+    /**
+     * Mark one board cell as P (1) or N (-1) based on the states reachable by moving right, up,
+     * or up-right.
+     */
     private void markSafe(int[][] ret, int row, int col) {
         if (row == 0 && col == ret[0].length - 1) return;
         if (row == 0) {

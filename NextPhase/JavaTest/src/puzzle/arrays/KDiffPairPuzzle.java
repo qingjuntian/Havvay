@@ -13,6 +13,7 @@ import java.util.List;
  * Created by qingjuntian on 12/9/16.
  */
 public class KDiffPairPuzzle implements Puzzle {
+    @Override
     public void resolve() {
         int[] arr = new int[]{3, 1, 4, 1, 5};
         int k = 2;
@@ -20,6 +21,9 @@ public class KDiffPairPuzzle implements Puzzle {
 
     }
 
+    /**
+     * Simple value-pair holder for demo output.
+     */
     class Pair {
         int m, n;
         Pair(int a, int b) {
@@ -27,8 +31,13 @@ public class KDiffPairPuzzle implements Puzzle {
             this.n = b;
         }
     }
+
+    /**
+     * Return all distinct value-pairs (x, x+k) after sorting the array and scanning distinct base
+     * values. For each distinct x, the method binary-searches whether x+k exists to the right.
+     */
     private List<Pair> kDiffPair(int[] arr, int k) {
-        List<Pair> ret = new LinkedList();
+        List<Pair> ret = new LinkedList<>();
         Arrays.sort(arr);
 
         if (k < 0) k = -k;
@@ -43,6 +52,9 @@ public class KDiffPairPuzzle implements Puzzle {
         return ret;
     }
 
+    /**
+     * Standard binary search on the closed interval [l, h].
+     */
     private boolean bSearch(int[] arr, int l, int h, int sum) {
         while (l <= h) {
             int m = l + (h - l) / 2;

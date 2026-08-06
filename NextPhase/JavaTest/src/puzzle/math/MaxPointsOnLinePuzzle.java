@@ -10,7 +10,7 @@ import java.util.Map;
  * Approach: anchor each point i, group the others by GCD-reduced slope dx/dy (direction-normalized),
  * counting duplicates separately; the best line through i is maxSlopeGroup + duplicates + 1. Time O(n^2).
  */
-public class CoupangPuzzle implements Puzzle {
+public class MaxPointsOnLinePuzzle implements Puzzle {
 
 
 
@@ -20,7 +20,11 @@ public class CoupangPuzzle implements Puzzle {
         System.out.println(findMaxPointNumberInSameLine(points));
     }
 
-
+    /**
+     * O(n^2) anchor-and-slope solution. For each anchor point i, group all later points by their
+     * normalized slope relative to i. The largest bucket through i, plus duplicates of i, gives the
+     * best line through that anchor.
+     */
     public int findMaxPointNumberInSameLine(int[][] points) {
         if (points == null) return 0;
         int n = points.length;
@@ -53,6 +57,9 @@ public class CoupangPuzzle implements Puzzle {
         return max;
     }
 
+    /**
+     * Greatest common divisor used to normalize slope directions into reduced integer pairs.
+     */
     private int gcd(int a, int b) {
         return b == 0 ? a : gcd(b, a % b);
     }

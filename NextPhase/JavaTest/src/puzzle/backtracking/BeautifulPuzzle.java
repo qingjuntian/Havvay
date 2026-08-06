@@ -20,7 +20,10 @@ public class BeautifulPuzzle implements Puzzle {
         System.out.println(beautifyArrangement(new int[]{1, 2, 3, 4, 5, 6}, 6));
     }
 
-
+    /**
+     * Position-based DFS: try every unused number i that satisfies the divisibility rule at the
+     * current 1-indexed position.
+     */
     private void dfs(int[] used, int n, int pos) {
         if (pos > n) {
             ++number;
@@ -35,6 +38,10 @@ public class BeautifulPuzzle implements Puzzle {
         }
     }
 
+    /**
+     * Swap-based permutation formulation. The suffix position n is fixed by swapping each remaining
+     * candidate into arr[n-1], then recursively solving the prefix of length n-1.
+     */
     private int beautifyArrangement(int[] arr, int n) {
         if (n == 0) {
             this.printNumArray(arr);
@@ -50,6 +57,9 @@ public class BeautifulPuzzle implements Puzzle {
         return number;
     }
 
+    /**
+     * Swap two 1-indexed logical positions in the permutation buffer.
+     */
     private void swap(int[] arr, int n, int k) {
         int t = arr[k - 1];
         arr[k - 1] = arr[n - 1];

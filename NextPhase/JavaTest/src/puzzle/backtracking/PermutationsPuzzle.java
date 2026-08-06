@@ -8,7 +8,7 @@ import puzzle.Puzzle;
  * Complexity: Time O(n*n!), Space O(n).
  * Created by qingjuntian on 6/7/16.
  */
-public class PPuzzle implements Puzzle {
+public class PermutationsPuzzle implements Puzzle {
 
     @Override
     public void resolve() {
@@ -20,6 +20,10 @@ public class PPuzzle implements Puzzle {
         printP2(arr, n);
     }
 
+    /**
+     * Recursive permutation generation by swapping one candidate into the last slot of the current
+     * prefix, permuting the shorter prefix, then swapping back.
+     */
     private void printP(int[] arr, int n) {
         if (n == 1) {
             printNumArray(arr);
@@ -34,7 +38,9 @@ public class PPuzzle implements Puzzle {
     }
 
 
-
+    /**
+     * Same swap-back permutation template as printP(), with a slightly clearer parameter name.
+     */
     private void printP2(int[] arr, int number) {
         if (number == 1) {
             this.printNumArray(arr);
@@ -49,6 +55,9 @@ public class PPuzzle implements Puzzle {
     }
 
 
+    /**
+     * Swap two array positions in-place.
+     */
     private void swap(int[] arr, int i, int n) {
         int a = arr[i];
         arr[i]  = arr[n];

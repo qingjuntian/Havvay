@@ -5,12 +5,14 @@ import puzzle.Puzzle;
  * Sort an array using a binary heap.
  * Approach: Build a max-heap, then repeatedly swap the root with the end and sift down.
  * Complexity: Time O(n log n), Space O(1).
- * Created by qingjuntian on 6/28/16.
  */
-public class SiftSort implements Puzzle {
+public class HeapSortPuzzle implements Puzzle {
 
     private static int swapTimes = 0;
 
+    /**
+     * Build a heap from the sample input, perform heap sort, and print the sorted output.
+     */
     @Override
     public void resolve() {
         int[] nArray = new int[]{1, 3, 4, 2, 15, 4, 2, 7, 9, 8, 14, 10};
@@ -27,6 +29,9 @@ public class SiftSort implements Puzzle {
         System.out.println("" + swapTimes);
     }
 
+    /**
+     * Sift-down / heapify step for a max-heap rooted at index i inside the prefix [0, size).
+     */
     private void heapify(int[] arr, int i, int size) {
         int left = 2 * i + 1;
         int right = 2 * i + 2;
@@ -51,6 +56,9 @@ public class SiftSort implements Puzzle {
 
     }
 
+    /**
+     * Swap two array positions and count the swap for the demo output.
+     */
     private void swap(int[] nArray, int i, int l) {
 
         int temp = nArray[i];
@@ -60,6 +68,9 @@ public class SiftSort implements Puzzle {
     }
 
 
+    /**
+     * Heap-insert helper kept for comparison with bottom-up heap construction.
+     */
     private void heapinsert(int[] arr, int index) {
         while (index != 0) {
             int parent = (index - 1) / 2;

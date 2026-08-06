@@ -1,20 +1,19 @@
 package puzzle.binarysearch;
 import puzzle.Puzzle;
 
-import model.Node;
-
 import java.util.Arrays;
-import java.util.Comparator;
 
 /**
  * Split an array into m contiguous parts, minimizing the largest part's sum.
  * LeetCode: Split Array Largest Sum
  * Approach: Binary search on the answer with a greedy feasibility check (feasibility is monotonic).
  * Complexity: Time O(n log sum), Space O(1).
- * Created by qingjuntian on 7/18/16.
  */
 public class SplitPuzzle implements Puzzle {
 
+    /**
+     * Print the sample array sum and the minimized largest partition sum for m = 10.
+     */
     @Override
     public void resolve() {
         int[] arr = new int[] {5334,6299,4199,9663,8945,3566,9509,3124,6026,6250,7475,5420,9201,9501,38,5897,4411,6638,9845,161,9563,8854,3731,5564,5331,4294,3275,1972,1521,2377,3701,6462,6778,187,9778,758,550,7510,6225,8691,3666,4622,9722,8011,7247,575,5431,4777,4032,8682,5888,8047,3562,9462,6501,7855,505,4675,6973,493,1374,3227,1244,7364,2298,3244,8627,5102,6375,8653,1820,3857,7195,7830,4461,7821,5037,2918,4279,2791,1500,9858,6915,5156,970,1471,5296,1688,578,7266,4182,1430,4985,5730,7941,3880,607,8776,1348,2974,1094,6733,5177,4975,5421,8190,8255,9112,8651,2797,335,8677,3754,893,1818,8479,5875,1695,8295,7993,7037,8546,7906,4102,7279,1407,2462,4425,2148,2925,3903,5447,5893,3534,3663,8307,8679,8474,1202,3474,2961,1149,7451,4279,7875,5692,6186,8109,7763,7798,2250,2969,7974,9781,7741,4914,5446,1861,8914,2544,5683,8952,6745,4870,1848,7887,6448,7873,128,3281,794,1965,7036,8094,1211,9450,6981,4244,2418,8610,8681,2402,2904,7712,3252,5029,3004,5526,6965,8866,2764,600,631,9075,2631,3411,2737,2328,652,494,6556,9391,4517,8934,8892,4561,9331,1386,4636,9627,5435,9272,110,413,9706,5470,5008,1706,7045,9648,7505,6968,7509,3120,7869,6776,6434,7994,5441,288,492,1617,3274,7019,5575,6664,6056,7069,1996,9581,3103,9266,2554,7471,4251,4320,4749,649,2617,3018,4332,415,2243,1924,69,5902,3602,2925,6542,345,4657,9034,8977,6799,8397,1187,3678,4921,6518,851,6941,6920,259,4503,2637,7438,3893,5042,8552,6661,5043,9555,9095,4123,142,1446,8047,6234,1199,8848,5656,1910,3430,2843,8043,9156,7838,2332,9634,2410,2958,3431,4270,1420,4227,7712,6648,1607,1575,3741,1493,7770,3018,5398,6215,8601,6244,7551,2587,2254,3607,1147,5184,9173,8680,8610,1597,1763,7914,3441,7006,1318,7044,7267,8206,9684,4814,9748,4497,2239};
@@ -26,17 +25,24 @@ public class SplitPuzzle implements Puzzle {
         System.out.println(splitArray(arr, 10));
     }
 
+    /**
+     * Binary-search the minimum possible value of the largest segment sum when the array is split
+     * into m contiguous parts.
+     */
     public int splitArray(int[] nums, int m) {
-        int max = 0; long sum = 0;
+        int max = 0;
+        long sum = 0;
         for (int num : nums) {
             max = Math.max(num, max);
             sum += num;
         }
-        if (m == 1) return (int)sum;
-        //binary search
-        long l = Math.max(max, sum/m); long r = sum;
+        if (m == 1) {
+            return (int) sum;
+        }
+        long l = Math.max(max, sum / m);
+        long r = sum;
         while (l <= r) {
-            long mid = l + (r - l)/ 2;
+            long mid = l + (r - l) / 2;
             if (valid(mid, nums, m)) {
                 r = mid - 1;
             } else {
@@ -45,10 +51,15 @@ public class SplitPuzzle implements Puzzle {
         }
         return (int)l;
     }
+
+    /**
+     * Greedy feasibility check for a guessed upper bound on segment sum. Returns true iff the array
+     * can be partitioned into at most m contiguous groups while keeping every group sum <= target.
+     */
     public boolean valid(long target, int[] nums, int m) {
         int count = 1;
         long total = 0;
-        for(int num : nums) {
+        for (int num : nums) {
             total += num;
             if (total > target) {
                 total = num;
@@ -60,118 +71,4 @@ public class SplitPuzzle implements Puzzle {
         }
         return true;
     }
-
-    private int splitArr(int[] arr, int m, int s, int e) {
-        if (arr == null || (e - s) < m) return Integer.MAX_VALUE;
-        if (m == 1) return Arrays.stream(arr, s, e).sum();
-        if ((e - s) == m ) return Arrays.stream(arr, s, e).max().getAsInt();
-
-
-        int min = Integer.MAX_VALUE;
-
-        for (int i = s; i < (e - m + 1); i++) {
-            int firstMax = Arrays.stream(arr, s, i + 1).sum();
-            int secondMax = splitArr(arr, m - 1, i + 1, e);
-            firstMax = Math.max(firstMax, secondMax);
-            min = Math.min(min, firstMax);
-
-        }
-
-        return min;
-    }
-
-
-    private int splitArr2(int[] arr, int m) {
-        if (arr == null || arr.length < m) return Integer.MIN_VALUE;
-        int flag = arr[0];
-        Node head = new Node(Integer.MAX_VALUE);
-        Node tail = head;
-        for (int i = 1; i < arr.length; i++) {
-            tail = tail.addNode(flag, arr[i]);
-            flag = arr[i];
-        }
-        tail.addNode(Integer.MAX_VALUE);
-
-        for (int ite = 0; ite < arr.length - m - 1; ite++) {
-            Node minNode = find(head, (o1, o2) -> o2.compareTo(o1));
-            Node pre = minNode.pre;
-            Node next = minNode.next;
-            if (pre.id < Integer.MAX_VALUE) {
-                pre.id += minNode.rc;
-                pre.rc = minNode.id;
-            }
-
-            if (next.id < Integer.MAX_VALUE) {
-                next.id += minNode.lc;
-                next.lc = minNode.id;
-            }
-            pre.next = next;
-            next.pre = pre;
-        }
-
-        return find(head, (o1, o2) -> o2.compareTo(o1)).id;
-
-    }
-
-    private int splitArr(int[] arr, int m) {
-        if (arr == null || arr.length < m) return Integer.MIN_VALUE;
-        Node head = new Node(arr[0]);
-        Node tail = head;
-        for (int i = 1; i < arr.length; i++) {
-            tail = tail.addNode(arr[i]);
-        }
-
-        int times = arr.length - m;
-
-        for (int ite = 0; ite < arr.length - m; ite++) {
-            Node minNode = find(head, (o1, o2) -> o2.compareTo(o1));
-
-            Node pre = minNode.pre;
-            Node next = minNode.next;
-            if (next == null || (pre != null && pre.id <= next.id)) {
-                Node newNode = new Node(minNode.id + pre.id);
-                newNode.next = next;
-                if (next != null) {
-                    next.pre = newNode;
-                }
-
-                newNode.pre = pre.pre;
-                if (pre.pre == null) {
-                    head=newNode;
-                } else {
-                   pre.pre.next = newNode;
-                }
-            } else {
-                Node newNode = new Node(minNode.id + next.id);
-                if (pre == null) {
-                    head = newNode;
-                } else {
-                    newNode.pre = pre;
-                    pre.next = newNode;
-                }
-
-                newNode.next = next.next;
-                if (next.next != null) {
-                    next.next.pre = newNode;
-                }
-            }
-
-        }
-        return find(head, (o1, o2) -> o1.compareTo(o2)).id;
-
-    }
-
-    private Node find(Node head, Comparator<Integer> c) {
-        Node min = head;
-        Node t = head;
-        while (t != null) {
-            if (c.compare(t.id, min.id) > 0) {
-                min = t;
-            }
-            t = t.next;
-        }
-        return min;
-    }
-
-
 }

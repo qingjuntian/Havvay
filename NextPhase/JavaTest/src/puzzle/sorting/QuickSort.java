@@ -5,10 +5,12 @@ import puzzle.Puzzle;
  * Sort an integer array in place.
  * Approach: Two-pointer partition around the leftmost pivot, then recurse on the subranges.
  * Complexity: Time O(n log n) avg / O(n^2) worst, Space O(log n).
- * Created by qingjuntian on 6/4/16.
  */
 public class QuickSort implements Puzzle {
 
+    /**
+     * Run quicksort on a small unsorted sample and print the sorted result.
+     */
     @Override
     public void resolve() {
         int[] list = new int[]{1, 3, 4, 2, 15, 4, 2, 7, 9, 8, 14, 10};
@@ -17,7 +19,11 @@ public class QuickSort implements Puzzle {
         printNumArray(list);
     }
 
-    public static  void qsort(int[] list, int l, int h) {
+    /**
+     * In-place quicksort using the leftmost element as the pivot and the classic two-pointer
+     * "digging hole" partition style on the inclusive range [l, h].
+     */
+    public static void qsort(int[] list, int l, int h) {
         if (list == null || list.length == 0) {
             return;
         }
@@ -26,24 +32,24 @@ public class QuickSort implements Puzzle {
             return;
         }
 
-        int flag = list[l];
+        int pivot = list[l];
         int left = l, right = h;
         while (l < h) {
-            while (list[h] > flag && h > l) {
+            while (list[h] > pivot && h > l) {
                 h--;
             }
             if (l < h) {
                 list[l++] = list[h];
             }
 
-            while (list[l] < flag && h > l) {
+            while (list[l] < pivot && h > l) {
                 l++;
             }
             if (l < h) {
                 list[h--] = list[l];
             }
         }
-        list[l] = flag;
+        list[l] = pivot;
         qsort(list, left, l - 1);
         qsort(list, l + 1, right);
     }

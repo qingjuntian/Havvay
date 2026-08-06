@@ -18,8 +18,6 @@ public class ArrayPatchPuzzle implements Puzzle {
 
     @Override
     public void resolve() {
-        int[] array = {1, 5, 10};
-
         List<Integer> patches = composePatch2(new int[]{4}, 50);
         for (int i : patches) {
             System.out.print(i + " ");
@@ -27,6 +25,11 @@ public class ArrayPatchPuzzle implements Puzzle {
 
     }
 
+    /**
+     * Greedy solution. Maintain {@code upper} = the smallest sum not yet formable, so the current
+     * covered interval is exactly [1, upper-1]. If the next input value is <= upper, coverage
+     * extends without gaps; otherwise, patch with upper itself, which doubles the reach.
+     */
     private List<Integer> composePatch2(int[] ints, int number) {
 
         List<Integer> patches = new ArrayList<>();

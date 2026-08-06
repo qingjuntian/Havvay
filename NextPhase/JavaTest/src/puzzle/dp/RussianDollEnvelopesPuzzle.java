@@ -11,7 +11,7 @@ import java.util.Arrays;
  *       (e.g. [[1,2],[1,1],[2,2],[3,3]] -> 2, but the answer is 3). Use maxEnvelopesLIS().
  * Created by qingjuntian on 7/1/16.
  */
-public class RussianPoll implements Puzzle {
+public class RussianDollEnvelopesPuzzle implements Puzzle {
 
     @Override
     public void resolve() {
@@ -26,6 +26,9 @@ public class RussianPoll implements Puzzle {
         System.out.println("sort+LIS (correct):       " + maxEnvelopesLIS(envelopes));
     }
 
+    /**
+     * Legacy ternary-tree node used by the older experimental approach below.
+     */
     private class Node {
         private Node left, middle, right;
 
@@ -60,6 +63,9 @@ public class RussianPoll implements Puzzle {
 
     }
 
+    /**
+     * Legacy tree-style attempt kept only for contrast. Prefer maxEnvelopesLIS().
+     */
     public int maxEnvelopes(int[][] envelopes) {
         if (envelopes == null || envelopes.length == 0) return 0;
         Node root = new Node(envelopes[0]);
@@ -69,6 +75,10 @@ public class RussianPoll implements Puzzle {
 
         return maxEnvelopes(root, 0);
     }
+
+    /**
+     * Recursive evaluator for the legacy tree-style attempt.
+     */
     public  int maxEnvelopes(Node root, int len) {
 
         if (root == null) return 0;
@@ -81,8 +91,10 @@ public class RussianPoll implements Puzzle {
         return max;
     }
 
-    // Standard O(n log n) solution: sort by width asc (equal width -> height DESC, so same-width
-    // envelopes can't chain), then take the strict LIS of the heights. Correct, unlike the tree above.
+    /**
+     * Standard O(n log n) solution: sort by width asc (equal width -> height DESC, so same-width
+     * envelopes cannot chain), then take the strict LIS of the heights.
+     */
     public int maxEnvelopesLIS(int[][] envelopes) {
         if (envelopes == null || envelopes.length == 0) return 0;
         int[][] es = envelopes.clone();                                   // don't mutate the caller's array

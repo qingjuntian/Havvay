@@ -6,23 +6,31 @@ import puzzle.Puzzle;
  * LeetCode: Next Permutation
  * Approach: Find the pivot from the right, swap with the next larger suffix element, then reverse the suffix.
  * Complexity: Time O(n), Space O(1).
- * Created by qingjuntian on 6/16/16.
  */
 public class NextPermutation implements Puzzle {
 
+    /**
+     * Transform a sample permutation into its next lexicographic ordering.
+     */
     @Override
     public void resolve() {
-
-        int[] nums = new int[]{3,1,4,6,5,2};
+        int[] nums = new int[]{3, 1, 4, 6, 5, 2};
         nextPermutation(nums);
         printNumArray(nums);
     }
 
+    /**
+     * Rearrange the array in-place into the next lexicographically greater permutation. If the
+     * current permutation is already the greatest, the array is reversed into the smallest one.
+     */
     public void nextPermutation(int[] nums) {
+        if (nums == null || nums.length < 2) {
+            return;
+        }
 
         int i = nums.length - 1;
         int last = nums[i];
-        for (; i >=0; i--) {
+        for (; i >= 0; i--) {
             if (nums[i] < last) {
                 break;
             } else {
@@ -49,9 +57,5 @@ public class NextPermutation implements Puzzle {
             i++;
             j--;
         }
-
     }
-
-
-
 }

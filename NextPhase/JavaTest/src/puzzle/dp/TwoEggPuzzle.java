@@ -4,8 +4,12 @@ import puzzle.Puzzle;
 /**
  * Minimize the worst-case number of trials in the egg-drop problem.
  * LeetCode: Super Egg Drop
- * Approach: DP over floors and egg count: 1 + min over drop floors of max(break, not-break).
- * Complexity: Time O(n^2 m), Space O(nm).
+ * Approaches:
+ *   minTry(n, m)    - classic floor/egg DP: 1 + min over drop floors of max(break, not-break);
+ *   minTrySuper     - move-based DP: how many floors can t trials cover with e eggs?
+ * Complexity:
+ *   classic DP      = O(n^2 * m) time, O(nm) space;
+ *   move-based DP   = O(m * answer) time, O(m) space.
  * Created by qingjuntian on 6/6/16.
  */
 public class TwoEggPuzzle implements Puzzle {
@@ -16,6 +20,9 @@ public class TwoEggPuzzle implements Puzzle {
         System.out.println("O(k*t) super:  " + minTrySuper(n, m));
     }
 
+    /**
+     * Special 2-egg formulation. minArr[i] = minimum worst-case throws needed for i floors.
+     */
     private int minTry(int n) {
         if (n <= 0) return 0;
         int[] minArr = new int[n + 1];
@@ -33,6 +40,9 @@ public class TwoEggPuzzle implements Puzzle {
         return minArr[n];                    // was minArr[n - 1] (off-by-one)
     }
 
+    /**
+     * General floor/egg DP. minArr[f][e] = minimum worst-case throws for f floors and e eggs.
+     */
     private int minTry(int n, int m) {
         if (n <= 0 || m <= 0) return 0;
         int[][] minArr = new int[n + 1][m + 1];
@@ -58,8 +68,11 @@ public class TwoEggPuzzle implements Puzzle {
         return minArr[n][m];
     }
 
-    // Optimal O(k * answer): index by TRIALS, not floors. f[e] = max floors solvable with t trials, e eggs.
-    // f(t, e) = f(t-1, e-1) + f(t-1, e) + 1; return the smallest t with f(t, m) >= n.
+    /**
+     * Optimal O(k * answer) formulation indexed by number of trials, not by floors.
+     * f[e] = maximum floors solvable with the current number of trials and e eggs.
+     * Recurrence: f(t, e) = f(t-1, e-1) + f(t-1, e) + 1.
+     */
     private int minTrySuper(int n, int m) {
         if (n <= 0 || m <= 0) return 0;
         int[] f = new int[m + 1];               // f[e] rolls over trials t = 1, 2, 3, ...

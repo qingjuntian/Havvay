@@ -2,31 +2,32 @@ package puzzle.arrays;
 import puzzle.Puzzle;
 
 /**
- * Maximum water container area (active path); also includes a two-sum pair helper.
- * LeetCode: Container With Most Water / Two Sum
- * Approach: Two pointers; move the shorter wall inward.
- * Complexity: Time O(n), Space O(1).
- * Created by qingjuntian on 7/19/16.
+ * Two classic two-pointer problems in one file.
+ * Active path:
+ *   - Container With Most Water: move the shorter wall inward.
+ * Helper:
+ *   - Two Sum on a sorted array: shrink from both ends based on the current sum vs target.
+ * Complexity: both main routines run in O(n) time and O(1) extra space.
  */
-public class Sum2Puzzle implements Puzzle {
+public class ContainerWithMostWaterPuzzle implements Puzzle {
+    /**
+     * Run the container-with-most-water demo on a sample height array.
+     */
     @Override
     public void resolve() {
-//        int[] array = new int[] {2, 5, 1, 3, -10, 7, 8, 11, 0, 9, -1, 4, 6};
-//
-//        int n = 8;
-//
-//        findSum(array, n);
-
+        // Active path: Container With Most Water. The two-sum helper above is kept for contrast.
         int[] array = new int[] {3, 5, 1, 3, 4, 7, 8, 11};
-        findMaxBucket(array);
+        findMaxContainerArea(array);
     }
 
     /**
      * Two-sum via two pointers. PRECONDITION: array must be SORTED ascending; the two-pointer
      * shrink logic is invalid on unsorted input (note the commented demo array above is NOT sorted).
      */
-    private void findSum(int[] array, int n) {
-        if (array == null || array.length == 0) return;
+    private void findTwoSumPairs(int[] array, int n) {
+        if (array == null || array.length == 0) {
+            return;
+        }
         int i = 0, j = array.length - 1;
         while (i < j) {
             if (array[i] + array[j] > n) {
@@ -41,8 +42,14 @@ public class Sum2Puzzle implements Puzzle {
         }
     }
 
-    private void findMaxBucket(int[] array) {
-        if (array == null || array.length == 0) return;
+    /**
+     * Container With Most Water: move the shorter wall inward because the current shorter wall is
+     * the limiting height of any container using the current endpoints.
+     */
+    private void findMaxContainerArea(int[] array) {
+        if (array == null || array.length == 0) {
+            return;
+        }
         int i = 0, j = array.length - 1;
         int volume = Integer.MIN_VALUE;
         while (i < j) {
@@ -59,5 +66,4 @@ public class Sum2Puzzle implements Puzzle {
         }
         System.out.println("max volume is " + volume);
     }
-
 }

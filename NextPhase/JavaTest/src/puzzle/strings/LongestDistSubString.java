@@ -6,9 +6,11 @@ import puzzle.Puzzle;
  * LeetCode: Longest Substring with At Most Two Distinct Characters
  * Approach: Single-pass sliding window tracking the two active chars and the last run length.
  * Complexity: Time O(n), Space O(1).
- * Created by qingjuntian on 6/6/16.
  */
 public class LongestDistSubString implements Puzzle {
+    /**
+     * Print the longest sample substring containing at most two distinct characters.
+     */
     @Override
     public void resolve() {
         String testString = "aabbbccc";
@@ -16,9 +18,18 @@ public class LongestDistSubString implements Puzzle {
         System.out.println(findLongest(testString));
     }
 
+    /**
+     * Return the longest substring containing at most two distinct characters.
+     * The method tracks the two active characters plus the length of the most recent run so the
+     * left boundary can be reset correctly when a third character appears.
+     */
     private String findLongest(String str) {
-        if (str == null ) return null;
-        if (str.length() <= 2) return str;
+        if (str == null) {
+            return null;
+        }
+        if (str.length() <= 2) {
+            return str;
+        }
 
         char[] chars = str.toCharArray();
 
@@ -39,7 +50,8 @@ public class LongestDistSubString implements Puzzle {
                     c2 = ch;
                 } else {
                     if (i - s > r - l) {
-                        l = s; r = i;
+                        l = s;
+                        r = i;
                     }
                     c1 = c2;
                     c2 = ch;

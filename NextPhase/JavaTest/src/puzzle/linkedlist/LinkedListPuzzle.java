@@ -3,17 +3,16 @@ import puzzle.Puzzle;
 
 import model.Node;
 
-import java.util.*;
-
 /**
- * Harness that builds a linked list and exercises helper methods (e.g., last-n node).
- * NOTE: Usage demo, not a solved puzzle.
- * Created by qingjuntian on 7/28/16.
+ * Small harness for linked-list helper operations defined on {@link Node}.
+ * <p>
+ * This class is intentionally lightweight: it builds a sample list, prints it,
+ * and demonstrates the "last n-th node" lookup helper.
  */
 public class LinkedListPuzzle implements Puzzle {
-
-
-
+    /**
+     * Construct a six-node list and invoke the helper demo methods on it.
+     */
     @Override
     public void resolve() {
         Node root = new Node(1);
@@ -25,7 +24,5 @@ public class LinkedListPuzzle implements Puzzle {
 
         root.debug();
         root.lastN(5);
-
-        Deque stack = new LinkedList();
     }
 }
