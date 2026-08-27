@@ -1,0 +1,11 @@
+version: '3.8'
+services:
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - ENV=production
+    volumes:
+      - ./src:/app/src
+# Add a vector DB service (qdrant) in a real setup, e.g. qdrant/qdrant:latest
