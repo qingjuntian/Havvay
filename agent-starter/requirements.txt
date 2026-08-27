@@ -1,9 +1,11 @@
 fastapi==0.99.1
 uvicorn[standard]==0.22.0
-langchain==0.1.0
-qdrant-client==1.4.0
+langchain
+qdrant-client>=1.19.0
 python-dotenv==1.0.0
 tqdm==4.66.1
 pytest==8.3.2
 httpx==0.24.1
-pydantic==2.5.1
+pydantic<2.0.0,>=1.8
+# packaging pinned to satisfy langchain-core 0.1.x constraints
+packaging==26.3
