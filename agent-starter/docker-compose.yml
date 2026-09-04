@@ -1,4 +1,4 @@
-version: '3.8'
+version: '3.2'
 services:
   web:
     build: .
@@ -8,4 +8,15 @@ services:
       - ENV=production
     volumes:
       - ./src:/app/src
-# Add a vector DB service (qdrant) in a real setup, e.g. qdrant/qdrant:latest
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant-data:/qdrant/storage
+
+volumes:
+  qdrant-data:
+    driver: local

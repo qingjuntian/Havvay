@@ -24,6 +24,7 @@ import re
 import sys
 import glob
 import time
+import shutil
 import subprocess
 
 # ----------------------------- CONFIG -----------------------------
@@ -52,25 +53,55 @@ REFERENCE_AUDIO = _resolve(REFERENCE_AUDIO)
 OUTPUT_DIR = _resolve(OUTPUT_DIR)
 CHUNK_DIR = os.path.join(OUTPUT_DIR, "chunks")
 
-# ffmpeg executable for the final concat. Prefer the trusted static build by full path.
-_FFMPEG_BIN = r"C:\Program Files\ffmpeg-master-latest-win64-gpl\bin"
-if os.path.isdir(_FFMPEG_BIN):
-    os.environ["PATH"] = _FFMPEG_BIN + os.pathsep + os.environ["PATH"]
-_FFMPEG_EXE = os.path.join(_FFMPEG_BIN, "ffmpeg.exe")
-if not os.path.isfile(_FFMPEG_EXE):
-    _FFMPEG_EXE = "ffmpeg"  # fall back to PATH (Colab/Linux)
+def _resolve_ffmpeg_executable():
+    """Find a usable ffmpeg binary on Windows or macOS/Linux."""
+    candidates = []
+    if os.name == "nt":
+        candidates.extend([
+            r"C:\Program Files\ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe",
+            r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
+            r"C:\ffmpeg\bin\ffmpeg.exe",
+            shutil.which("ffmpeg"),
+        ])
+    else:
+        candidates.extend([
+            shutil.which("ffmpeg"),
+            "/opt/homebrew/bin/ffmpeg",
+            "/usr/local/bin/ffmpeg",
+            "/usr/bin/ffmpeg",
+        ])
 
-# coqui-tts (torch>=2.9) uses torchcodec for audio IO, which needs FFmpeg *shared* libraries
-# (avutil-59/avcodec-61/avformat-61 = FFmpeg 7.1). The "-gpl" build is static (no DLLs), so we
-# register a shared build's DLLs for torchcodec. NOTE: we deliberately do NOT add this to PATH,
-# so the concat below keeps using the trusted static ffmpeg.exe -- a freshly-downloaded shared
-# ffmpeg.exe can trip Windows Defender (WinError 225).
-_FFMPEG_SHARED_BIN = r"C:\Users\qitia\ffmpeg-shared-7.1\ffmpeg-n7.1-latest-win64-gpl-shared-7.1\bin"
-if os.name == "nt" and os.path.isdir(_FFMPEG_SHARED_BIN):
-    try:
-        os.add_dll_directory(_FFMPEG_SHARED_BIN)
-    except (AttributeError, OSError):
-        pass
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if os.path.isfile(candidate):
+            ffmpeg_dir = os.path.dirname(candidate)
+            if ffmpeg_dir and ffmpeg_dir not in os.environ.get("PATH", "").split(os.pathsep):
+                os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
+            return candidate
+
+    if os.name == "nt":
+        sys.exit(
+            "[error] ffmpeg not found. Install FFmpeg, then re-run this script. "
+            "Example: winget install Gyan.Dev.FFmpeg or download a static build and add it to PATH."
+        )
+    sys.exit(
+        "[error] ffmpeg not found. Install it with: brew install ffmpeg\n"
+        "        Then run: python3 src/narrate_book.py"
+    )
+
+
+_FFMPEG_EXE = _resolve_ffmpeg_executable()
+
+# On Windows, some FFmpeg builds are static; on macOS it isn't needed. Keep the code
+# portable and avoid hard-coded Windows-only DLL registration.
+if os.name == "nt":
+    _FFMPEG_SHARED_BIN = r"C:\Users\qitia\ffmpeg-shared-7.1\ffmpeg-n7.1-latest-win64-gpl-shared-7.1\bin"
+    if os.path.isdir(_FFMPEG_SHARED_BIN):
+        try:
+            os.add_dll_directory(_FFMPEG_SHARED_BIN)
+        except (AttributeError, OSError):
+            pass
 
 
 # ----------------------------- TEXT CHUNKING -----------------------------
@@ -135,8 +166,17 @@ def build_chunks(text: str):
 # ----------------------------- AUDIO -----------------------------
 def load_model():
     """Load XTTS-v2 and return the underlying model plus precomputed speaker latents."""
-    import torch
-    from TTS.api import TTS
+    try:
+        import torch
+        from TTS.api import TTS
+    except ImportError as exc:
+        sys.exit(
+            "[error] XTTS dependencies are missing. Install them with:\n"
+            "        python3 -m pip install --upgrade pip\n"
+            "        python3 -m pip install coqui-tts soundfile\n"
+            "        Then re-run: python3 src/narrate_book.py\n"
+            f"        Import error: {exc}"
+        )
 
     os.environ.setdefault("COQUI_TOS_AGREED", "1")  # auto-accept XTTS non-commercial license
     device = "cuda" if torch.cuda.is_available() else "cpu"
