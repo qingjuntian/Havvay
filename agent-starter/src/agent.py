@@ -7,15 +7,19 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from .retriever import Retriever
+from .memory import SessionMemory
+from .safety import SafetyLayer
 from .tools import Tools
 
 load_dotenv()
 
 
 class Agent:
-    def __init__(self):
-        self.retriever = Retriever()
-        self.tools = Tools()
+    def __init__(self, retriever=None, tools=None, memory=None, safety=None):
+        self.retriever = retriever or Retriever()
+        self.tools = tools or Tools()
+        self.memory = memory or SessionMemory()
+        self.safety = safety or SafetyLayer()
 
     def model_call(self, prompt: str) -> str:
         api_key = (
@@ -56,7 +60,9 @@ class Agent:
         content: Optional[str] = completion.choices[0].message.content
         return content or ""
 
-    def run(self, prompt: str) -> str:
+    def run(self, prompt: str, session_id: str = "default") -> str:
+        prompt = self.safety.validate(prompt)
+        history = self.memory.get(session_id)
         # 1. retrieve context
         ctx = self.retriever.retrieve(prompt, top_k=3)
         # 2. assemble prompt
@@ -67,8 +73,16 @@ Context:
 User:
 {}
 """.format("\n---\n".join(ctx), prompt)
+        if history:
+            full = "Conversation history:\n{}\n\n{}".format(
+                "\n".join(f"{turn['role']}: {turn['content']}" for turn in history),
+                full,
+            )
         # 3. decide to call tools (simple heuristic)
         if "calculate" in prompt.lower():
-            return self.tools.calc(prompt)
-        # 4. call model
-        return self.model_call(full)
+            response = self.tools.calc(prompt)
+        else:
+            # 4. call model
+            response = self.model_call(full)
+        self.memory.add(session_id, prompt, response)
+        return response
