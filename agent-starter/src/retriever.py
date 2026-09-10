@@ -25,6 +25,7 @@ SAMPLE_DOCS = [
     "Doc 1: Example knowledge about the product.",
     "Doc 2: Troubleshooting steps for the service.",
     "Doc 3: API reference highlights and examples.",
+    "Doc 4: API reference error handling.",
 ]
 
 VECTOR_SIZE = 1536
