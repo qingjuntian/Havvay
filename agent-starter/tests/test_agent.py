@@ -1,22 +1,78 @@
 from src.agent import Agent
+import os
 from src.memory import SessionMemory
 from src.safety import SafetyLayer, UnsafePromptError
 from src.tools import Tools
 
 
 class StubRetriever:
+    def __init__(self):
+        self.queries = []
+
     def retrieve(self, query, top_k=3):
+        self.queries.append(query)
         return ["retrieved context"]
 
 
 def test_agent_run():
-    a = Agent(retriever=StubRetriever())
+    retriever = StubRetriever()
+    a = Agent(retriever=retriever)
     a.model_call = lambda prompt: "model response"
     resp = a.run("Hello world")
     assert resp == "model response"
     assert a.memory.get("default")[-1] == {
         "role": "assistant",
         "content": "model response",
+    }
+    assert a.last_usage["total_tokens"] == 0
+    assert retriever.queries == ["Hello world"]
+
+
+def test_follow_up_uses_session_history_instead_of_fresh_document_search():
+    retriever = StubRetriever()
+    agent = Agent(retriever=retriever)
+    prompts = []
+    agent.model_call = lambda prompt: prompts.append(prompt) or "puzzle answer"
+
+    agent.run("How do I solve this puzzle?", session_id="puzzle")
+    agent.run("Is there any better approach?", session_id="puzzle")
+
+    assert retriever.queries == ["How do I solve this puzzle?"]
+    assert "How do I solve this puzzle?" in prompts[-1]
+    assert "puzzle answer" in prompts[-1]
+    assert "Is there any better approach?" in prompts[-1]
+
+
+def test_agent_records_model_usage_and_cost(monkeypatch):
+    class Usage:
+        prompt_tokens = 100
+        completion_tokens = 25
+        total_tokens = 125
+
+    class Completion:
+        choices = [type("Choice", (), {"message": type("Message", (), {"content": "answer"})()})()]
+        usage = Usage()
+
+    class Completions:
+        def create(self, **kwargs):
+            return Completion()
+
+    class FakeClient:
+        chat = type("Chat", (), {"completions": Completions()})()
+
+    monkeypatch.setenv("MOONSHOT_INPUT_COST_PER_1M_TOKENS", "1")
+    monkeypatch.setenv("MOONSHOT_OUTPUT_COST_PER_1M_TOKENS", "2")
+    monkeypatch.setattr("src.agent.OpenAI", lambda **kwargs: FakeClient())
+
+    agent = Agent(retriever=StubRetriever())
+    assert agent.run("hello") == "answer"
+    assert agent.last_usage == {
+        "provider": "moonshot",
+        "model": os.getenv("MOONSHOT_MODEL", "kimi-k3"),
+        "prompt_tokens": 100,
+        "completion_tokens": 25,
+        "total_tokens": 125,
+        "estimated_cost_usd": 0.00015,
     }
 
 

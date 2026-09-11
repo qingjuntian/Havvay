@@ -34,8 +34,13 @@ async def query(req: QueryRequest):
         raise HTTPException(status_code=500, detail="Internal agent error.") from exc
     finally:
         logger.info(
-            "query_complete session_id=%s duration_ms=%.2f",
+            "query_complete session_id=%s duration_ms=%.2f usage=%s",
             req.session_id,
             (time.perf_counter() - started) * 1000,
+            getattr(agent, "last_usage", {}),
         )
-    return {"response": resp, "session_id": req.session_id}
+    return {
+        "response": resp,
+        "session_id": req.session_id,
+        "usage": getattr(agent, "last_usage", {}),
+    }
