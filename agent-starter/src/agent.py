@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from .retriever import Retriever
-from .memory import SessionMemory
+from .memory import SessionMemory, LongTermMemory
 from .safety import SafetyLayer
 from .tools import Tools
 
@@ -15,10 +15,11 @@ load_dotenv()
 
 
 class Agent:
-    def __init__(self, retriever=None, tools=None, memory=None, safety=None):
+    def __init__(self, retriever=None, tools=None, memory=None, safety=None, long_term_memory=None):
         self.retriever = retriever or Retriever()
         self.tools = tools or Tools()
         self.memory = memory or SessionMemory()
+        self.long_term_memory = long_term_memory or LongTermMemory()
         self.safety = safety or SafetyLayer()
         self.last_usage = self._empty_usage()
 
@@ -123,16 +124,21 @@ class Agent:
         self.last_usage = self._empty_usage()
         history = self.memory.get(session_id)
         is_follow_up = self._is_follow_up(prompt, history)
+        long_term_ctx = self.long_term_memory.search(prompt, top_k=2)
         # 1. retrieve context
         ctx = [] if is_follow_up else self.retriever.retrieve(prompt, top_k=3)
         # 2. assemble prompt
+        memory_block = "\n---\n".join(long_term_ctx) if long_term_ctx else "No relevant long-term memory found."
         full = """
+Long-term memory (use only when relevant):
+{}
+
 Document context (use only when relevant):
 {}
 
 Current user message:
 {}
-""".format("\n---\n".join(ctx), prompt)
+""".format(memory_block, "\n---\n".join(ctx), prompt)
         if history:
             full = """Conversation history (primary context for this follow-up):
 {}
@@ -154,4 +160,5 @@ the documents.
             # 4. call model
             response = self.model_call(full)
         self.memory.add(session_id, prompt, response)
+        self.long_term_memory.add(session_id, prompt, response)
         return response

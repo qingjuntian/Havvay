@@ -1,6 +1,6 @@
 from src.agent import Agent
 import os
-from src.memory import SessionMemory
+from src.memory import SessionMemory, LongTermMemory
 from src.safety import SafetyLayer, UnsafePromptError
 from src.tools import Tools
 
@@ -99,6 +99,32 @@ def test_calculator_supports_safe_arithmetic():
     tools = Tools()
     assert tools.calc("calculate 2 + 3 * 4") == "Calculation result: 14"
     assert tools.calc("calculate sqrt(16)") == "Calculation result: 4.0"
+
+
+def test_long_term_memory_persists_and_retrieves_relevant_context():
+    class FakeVectorStore:
+        def __init__(self, collection_name="agent_memories"):
+            self.collection_name = collection_name
+            self.items = []
+
+        def upsert(self, ids, embeddings, metadatas=None, payloads=None):
+            self.items.extend([
+                {"id": id_, "payload": payload, "vector": embedding}
+                for id_, embedding, payload in zip(ids, embeddings, payloads or [{} for _ in ids])
+            ])
+
+        def search_by_vector(self, embedding, top_k=3):
+            return [
+                {"id": item["id"], "payload": item["payload"]}
+                for item in self.items[:top_k]
+            ]
+
+    store = LongTermMemory(vector_store=FakeVectorStore())
+    memory_text = "User prefers concise answers and likes to use Python for data work."
+    store.add("alice", "What are your preferences?", memory_text)
+    matches = store.search("What coding language does the user prefer?", top_k=1)
+
+    assert matches == [memory_text]
 
 
 def test_calculator_rejects_code_execution():

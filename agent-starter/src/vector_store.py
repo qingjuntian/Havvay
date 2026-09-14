@@ -58,29 +58,35 @@ class VectorStore:
                 existing = []
 
             if collection_name not in existing:
-                # Prefer client APIs when available
+                # Prefer client APIs when available. Some qdrant-client versions accept
+                # `vectors_config` rather than the older `vector_size` / `distance` kwargs.
                 try:
                     if hasattr(self.client, "recreate_collection"):
-                        self.client.recreate_collection(
-                            collection_name=collection_name,
-                            vector_size=1536,
-                            distance=rest.Distance.COSINE,
-                        )
+                        try:
+                            self.client.recreate_collection(
+                                collection_name=collection_name,
+                                vectors_config=rest.VectorParams(size=1536, distance=rest.Distance.COSINE),
+                            )
+                        except TypeError:
+                            self.client.recreate_collection(
+                                collection_name=collection_name,
+                                vector_size=1536,
+                                distance=rest.Distance.COSINE,
+                            )
                     else:
                         self.client.create_collection(collection_name=collection_name, vectors_config=rest.VectorParams(size=1536, distance=rest.Distance.COSINE))
                 except Exception as exc:
-                    # Some client-server combinations may cause httpx/httpcore RemoteProtocolError
-                    # Fall back to a plain HTTP PUT to /collections/{name} which works on many qdrant versions
+                    # Some client-server combinations may cause httpx/httpcore RemoteProtocolError.
+                    # Fall back to a plain HTTP PUT to /collections/{name} and use a consistent loopback host.
                     try:
                         import httpx
                         qdrant_url = os.getenv("QDRANT_URL")
                         if not qdrant_url:
-                            host = os.getenv("QDRANT_HOST", "localhost")
+                            host = os.getenv("QDRANT_HOST", "127.0.0.1")
                             port = int(os.getenv("QDRANT_PORT", 6333))
                             qdrant_url = f"http://{host}:{port}"
                         url = f"{qdrant_url.rstrip('/')}/collections/{collection_name}"
                         payload = {"vectors": {"size": 1536, "distance": "Cosine"}}
-                        # disable environment proxy resolution to avoid platform/system proxy interfering (trust_env=False)
                         r = httpx.put(url, json=payload, timeout=10.0, trust_env=False)
                         if r.status_code not in (200, 201):
                             raise RuntimeError(f"HTTP create collection failed: {r.status_code} {r.text}")
