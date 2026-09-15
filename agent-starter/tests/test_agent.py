@@ -1,7 +1,9 @@
 from src.agent import Agent
 import os
+from fastapi.testclient import TestClient
 from src.memory import SessionMemory, LongTermMemory
 from src.safety import SafetyLayer, UnsafePromptError
+from src.main import app
 from src.tools import Tools
 
 
@@ -99,6 +101,97 @@ def test_calculator_supports_safe_arithmetic():
     tools = Tools()
     assert tools.calc("calculate 2 + 3 * 4") == "Calculation result: 14"
     assert tools.calc("calculate sqrt(16)") == "Calculation result: 4.0"
+
+
+def test_agent_stream_model_call_emits_chunks(monkeypatch):
+    class FakeChunk:
+        def __init__(self, text):
+            self.choices = [type("Choice", (), {"delta": type("Delta", (), {"content": text})()})()]
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            assert kwargs["stream"] is True
+            return iter([FakeChunk("hello"), FakeChunk(" world")])
+
+    class FakeClient:
+        chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setenv("MOONSHOT_API_KEY", "test-key")
+    monkeypatch.setattr("src.agent.OpenAI", lambda **kwargs: FakeClient())
+
+    chunks = []
+    agent = Agent()
+    response = agent.stream_model_call("hi", on_chunk=lambda chunk: chunks.append(chunk))
+
+    assert response == "hello world"
+    assert chunks == ["hello", " world"]
+
+
+def test_openai_provider_uses_openai_configuration(monkeypatch):
+    captured = {}
+
+    class FakeClient:
+        pass
+
+    def build_client(**kwargs):
+        captured.update(kwargs)
+        return FakeClient()
+
+    monkeypatch.setenv("MODEL_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-test-key")
+    monkeypatch.setenv("OPENAI_API_BASE", "https://example.test/v1")
+    monkeypatch.setattr("src.agent.OpenAI", build_client)
+
+    agent = Agent()
+    assert agent._build_client().__class__ is FakeClient
+    assert captured == {
+        "api_key": "openai-test-key",
+        "base_url": "https://example.test/v1",
+    }
+    assert agent._model_name() == "gpt-4o-mini"
+
+
+def test_local_provider_reports_optional_dependency_requirement(monkeypatch):
+    monkeypatch.setenv("MODEL_PROVIDER", "local")
+    monkeypatch.setenv("LOCAL_MODEL", "test/local-model")
+
+    agent = Agent()
+    try:
+        agent.model_call("hello")
+    except RuntimeError as exc:
+        assert "transformers and torch" in str(exc)
+    else:
+        raise AssertionError("Expected local provider dependency error")
+
+
+def test_query_stream_yields_sse_events(monkeypatch):
+    class FakeChunk:
+        def __init__(self, text):
+            self.choices = [type("Choice", (), {"delta": type("Delta", (), {"content": text})()})()]
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            assert kwargs["stream"] is True
+            return iter([FakeChunk("hello"), FakeChunk(" world")])
+
+    class FakeClient:
+        chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setenv("MOONSHOT_API_KEY", "test-key")
+    monkeypatch.setattr("src.agent.OpenAI", lambda **kwargs: FakeClient())
+
+    client = TestClient(app)
+    response = client.post("/query/stream", json={"prompt": "hi", "session_id": "sse-test"})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert '"status": "started"' in response.text
+    assert '"status": "generating"' in response.text
+    body = response.text
+    assert "data: {\"type\": \"chunk\", \"content\": \"hello\"}" in body
+    assert "data: {\"type\": \"chunk\", \"content\": \" world\"}" in body
+    assert '"type": "final"' in body
+    assert '"content": "hello world"' in body
 
 
 def test_long_term_memory_persists_and_retrieves_relevant_context():
