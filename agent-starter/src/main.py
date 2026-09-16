@@ -1,6 +1,7 @@
 import logging
 import time
 import json
+from queue import Empty
 
 from typing import List
 
@@ -15,6 +16,10 @@ app = FastAPI(title="Agent Starter")
 agent = Agent()
 task_queue = TaskQueue(worker=lambda prompt, session_id: agent.run(prompt, session_id=session_id))
 logger = logging.getLogger("agent_starter")
+
+
+def sse_event(payload):
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 class QueryRequest(BaseModel):
     prompt: str
@@ -93,9 +98,34 @@ async def query_stream(req: QueryRequest):
         started = time.perf_counter()
         try:
             agent.last_usage = agent._empty_usage()
-            yield f"data: {json.dumps({'type': 'status', 'status': 'started'})}\n\n"
+            yield sse_event({"type": "status", "status": "started"})
             prompt = agent.safety.validate(req.prompt)
-            yield f"data: {json.dumps({'type': 'status', 'status': 'retrieving_context'})}\n\n"
+            if is_long_running_prompt(prompt):
+                task_id = task_queue.submit([prompt], session_id=req.session_id)
+                subscriber = task_queue.subscribe(task_id)
+                try:
+                    while True:
+                        try:
+                            event = subscriber.get(timeout=15)
+                        except Empty:
+                            yield sse_event({"type": "heartbeat", "task_id": task_id})
+                            continue
+
+                        yield sse_event(event)
+                        if event.get("type") != "status":
+                            continue
+                        if event.get("status") == "completed":
+                            task = task_queue.get(task_id)
+                            result = task["results"][-1]["response"] if task and task["results"] else ""
+                            yield sse_event({"type": "final", "task_id": task_id, "content": result, "session_id": req.session_id})
+                            return
+                        if event.get("status") == "failed":
+                            yield sse_event({"type": "error", "task_id": task_id, "message": event.get("error", "Task failed")})
+                            return
+                finally:
+                    task_queue.unsubscribe(task_id, subscriber)
+
+            yield sse_event({"type": "status", "status": "retrieving_context"})
             history = agent.memory.get(req.session_id)
             is_follow_up = agent._is_follow_up(prompt, history)
             long_term_ctx = agent.long_term_memory.search(prompt, top_k=2)
@@ -134,32 +164,32 @@ the documents.
                     "session_id": req.session_id,
                     "usage": getattr(agent, "last_usage", {}),
                 }
-                yield f"data: {json.dumps(payload)}\n\n"
+                yield sse_event(payload)
                 agent.memory.add(req.session_id, prompt, result)
                 agent.long_term_memory.add(req.session_id, prompt, result)
                 return
 
-            yield f"data: {json.dumps({'type': 'status', 'status': 'generating'})}\n\n"
+            yield sse_event({"type": "status", "status": "generating"})
             response_chunks = []
 
             for chunk in agent.iter_model_stream(full):
                 response_chunks.append(chunk)
                 event = {"type": "chunk", "content": chunk}
-                yield f"data: {json.dumps(event)}\n\n"
+                yield sse_event(event)
 
             response = "".join(response_chunks)
-            yield f"data: {json.dumps({'type': 'final', 'content': response, 'session_id': req.session_id, 'usage': agent.last_usage})}\n\n"
+            yield sse_event({"type": "final", "content": response, "session_id": req.session_id, "usage": agent.last_usage})
             agent.memory.add(req.session_id, prompt, response)
             agent.long_term_memory.add(req.session_id, prompt, response)
         except UnsafePromptError as exc:
             logger.warning("query_rejected session_id=%s reason=%s", req.session_id, str(exc))
-            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+            yield sse_event({"type": "error", "message": str(exc)})
         except RuntimeError as exc:
             logger.error("query_failed session_id=%s error=%s", req.session_id, str(exc))
-            yield f"data: {json.dumps({'type': 'error', 'message': 'Upstream agent service failed.'})}\n\n"
+            yield sse_event({"type": "error", "message": "Upstream agent service failed."})
         except Exception as exc:
             logger.exception("query_unexpected_failure session_id=%s", req.session_id)
-            yield f"data: {json.dumps({'type': 'error', 'message': 'Internal agent error.'})}\n\n"
+            yield sse_event({"type": "error", "message": "Internal agent error."})
         finally:
             logger.info(
                 "query_complete session_id=%s duration_ms=%.2f usage=%s",

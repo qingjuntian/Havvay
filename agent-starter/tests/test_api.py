@@ -71,7 +71,7 @@ class FakeAgent:
         }
 
     def iter_model_stream(self, prompt):
-        yield "streamed"
+        yield "streamed Chinese: 中文"
         yield " answer"
 
 
@@ -135,10 +135,42 @@ def test_query_stream_endpoint_returns_sse_events(monkeypatch):
         if line.startswith("data: ")
     ]
     assert events[0] == {"type": "status", "status": "started"}
-    assert {"type": "chunk", "content": "streamed"} in events
+    assert "中文" in response.text
+    assert "\\u4e2d" not in response.text
+    assert {"type": "chunk", "content": "streamed Chinese: 中文"} in events
     assert {"type": "chunk", "content": " answer"} in events
     assert events[-1]["type"] == "final"
-    assert events[-1]["content"] == "streamed answer"
+    assert events[-1]["content"] == "streamed Chinese: 中文 answer"
+
+
+def test_query_stream_endpoint_queues_long_running_prompt(monkeypatch):
+    monkeypatch.setattr(main_module, "agent", FakeAgent())
+    main_module.task_queue.worker = lambda prompt, session_id: main_module.agent.run(
+        prompt, session_id=session_id
+    )
+
+    response = TestClient(app).post(
+        "/query/stream",
+        json={
+            "prompt": "Process all files in the background and generate a full report",
+            "session_id": "long-stream-test",
+        },
+    )
+
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+
+    assert response.status_code == 200
+    assert events[0] == {"type": "status", "status": "started"}
+    assert any(event.get("status") == "queued" for event in events)
+    assert any(event.get("status") == "running" for event in events)
+    assert events[-1]["type"] == "final"
+    assert events[-1]["content"] == (
+        "answer to Process all files in the background and generate a full report"
+    )
 
 
 def test_task_endpoints_process_batch_in_background(monkeypatch):
