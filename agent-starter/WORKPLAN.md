@@ -35,12 +35,14 @@ Day 11: Tool sandboxing
 Day 12: Observability basics
   - Task: Add structured logging and capture tokens/cost for each request.
 Day 13: Testing harness
-  - Task: Add unit tests for agent logic and integration tests mocking external services.
+  - Task: Add unit tests for agent logic and integration tests mocking external services. (completed)
+  - Deliverable: tests/test_agent.py and tests/test_api.py with mocked API, agent, and SSE coverage.
 Day 14: Buffer / doc day
 
 Week 3 — Scaling, serving, and model choices
 Day 15: Model selection
-  - Task: Wire in both openai and a local HF model switchable by config.
+  - Task: Wire in both openai and a local HF model switchable by config. (completed)
+  - Deliverable: MODEL_PROVIDER selects Moonshot, OpenAI-compatible, or optional local Hugging Face execution.
 Day 16: Containerize + Docker Compose
   - Task: Build Docker image and run with compose (include qdrant if needed).
 Day 17: Load testing

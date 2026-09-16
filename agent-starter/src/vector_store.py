@@ -147,14 +147,34 @@ class VectorStore:
                     with_payload=True,
                 )
                 hits = response.points
-            # hits are PointStruct objects — convert to simple dicts
-            results = []
-            for h in hits:
-                results.append({
-                    "id": str(h.id),
-                    "score": float(h.score) if hasattr(h, "score") else None,
-                    "payload": getattr(h, "payload", {})
-                })
-            return results
         except Exception as exc:
-            raise RuntimeError(f"Qdrant search failed: {exc}") from exc
+            # qdrant-client 1.19 uses /points/query, which older servers do not expose.
+            try:
+                import httpx
+
+                qdrant_url = os.getenv("QDRANT_URL")
+                if not qdrant_url:
+                    host = os.getenv("QDRANT_HOST", "127.0.0.1")
+                    port = int(os.getenv("QDRANT_PORT", 6333))
+                    qdrant_url = f"http://{host}:{port}"
+                response = httpx.post(
+                    f"{qdrant_url.rstrip('/')}/collections/{self.collection_name}/points/search",
+                    json={"vector": embedding, "limit": top_k, "with_payload": True},
+                    timeout=10.0,
+                    trust_env=False,
+                )
+                response.raise_for_status()
+                hits = [type("Hit", (), item) for item in response.json()["result"]]
+            except Exception as fallback_exc:
+                raise RuntimeError(f"Qdrant search failed: {exc}") from fallback_exc
+        # hits are PointStruct objects or compatible response objects.
+        return [
+            {
+                "id": str(h.id),
+                "score": float(h.score) if hasattr(h, "score") else None,
+                "payload": getattr(h, "payload", {})
+                if not isinstance(h, dict)
+                else h.get("payload", {}),
+            }
+            for h in hits
+        ]

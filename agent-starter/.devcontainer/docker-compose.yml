@@ -1,0 +1,6 @@
+services:
+  web:
+    volumes:
+      - .:/app:cached
+    working_dir: /app
+ 
