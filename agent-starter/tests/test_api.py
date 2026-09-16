@@ -98,6 +98,27 @@ def test_query_endpoint_uses_agent_without_external_services(monkeypatch):
     }
 
 
+def test_query_endpoint_queues_long_running_prompt(monkeypatch):
+    monkeypatch.setattr(main_module, "agent", FakeAgent())
+    main_module.task_queue.worker = lambda prompt, session_id: main_module.agent.run(
+        prompt, session_id=session_id
+    )
+
+    response = TestClient(app).post(
+        "/query",
+        json={
+            "prompt": "Process all files in the background and generate a full report",
+            "session_id": "long-running-test",
+        },
+    )
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "queued"
+    assert response.json()["execution_mode"] == "background"
+    assert response.json()["session_id"] == "long-running-test"
+    assert response.json()["task_id"]
+
+
 def test_query_stream_endpoint_returns_sse_events(monkeypatch):
     monkeypatch.setattr(main_module, "agent", FakeAgent())
 
@@ -118,3 +139,45 @@ def test_query_stream_endpoint_returns_sse_events(monkeypatch):
     assert {"type": "chunk", "content": " answer"} in events
     assert events[-1]["type"] == "final"
     assert events[-1]["content"] == "streamed answer"
+
+
+def test_task_endpoints_process_batch_in_background(monkeypatch):
+    monkeypatch.setattr(main_module, "agent", FakeAgent())
+    main_module.task_queue.worker = lambda prompt, session_id: main_module.agent.run(
+        prompt, session_id=session_id
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/tasks",
+        json={"prompts": ["first", "second"], "session_id": "batch-test"},
+    )
+
+    assert response.status_code == 202
+    task_id = response.json()["task_id"]
+    assert response.json()["status"] == "queued"
+
+    for _ in range(20):
+        status = client.get(f"/tasks/{task_id}")
+        if status.json()["status"] == "completed":
+            break
+
+    assert status.status_code == 200
+    assert status.json()["status"] == "completed"
+    assert status.json()["completed"] == 2
+    assert [item["response"] for item in status.json()["results"]] == [
+        "answer to first",
+        "answer to second",
+    ]
+
+
+def test_task_submission_rejects_empty_batch():
+    response = TestClient(app).post("/tasks", json={"prompts": ["", "  "]})
+
+    assert response.status_code == 422
+
+
+def test_task_status_returns_not_found():
+    response = TestClient(app).get("/tasks/does-not-exist")
+
+    assert response.status_code == 404

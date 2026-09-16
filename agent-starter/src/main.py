@@ -2,29 +2,67 @@ import logging
 import time
 import json
 
+from typing import List
+
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from .agent import Agent
 from .safety import UnsafePromptError
+from .task_queue import TaskQueue, is_long_running_prompt
 
 app = FastAPI(title="Agent Starter")
 agent = Agent()
+task_queue = TaskQueue(worker=lambda prompt, session_id: agent.run(prompt, session_id=session_id))
 logger = logging.getLogger("agent_starter")
 
 class QueryRequest(BaseModel):
     prompt: str
     session_id: str = "default"
 
+
+class TaskRequest(BaseModel):
+    prompts: List[str]
+    session_id: str = "default"
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.post("/tasks", status_code=202)
+async def submit_task(req: TaskRequest):
+    prompts = [prompt.strip() for prompt in req.prompts if prompt.strip()]
+    if not prompts:
+        raise HTTPException(status_code=422, detail="At least one non-empty prompt is required.")
+    task_id = task_queue.submit(prompts, session_id=req.session_id)
+    return {"task_id": task_id, "status": "queued"}
+
+
+@app.get("/tasks/{task_id}")
+async def task_status(task_id: str):
+    task = task_queue.get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    return task
 
 @app.post("/query")
 async def query(req: QueryRequest):
 
     started = time.perf_counter()
     try:
+        prompt = agent.safety.validate(req.prompt)
+        if is_long_running_prompt(prompt):
+            task_id = task_queue.submit([prompt], session_id=req.session_id)
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "task_id": task_id,
+                    "status": "queued",
+                    "execution_mode": "background",
+                    "session_id": req.session_id,
+                },
+            )
         resp = agent.run(req.prompt, session_id=req.session_id)
     except UnsafePromptError as exc:
         logger.warning("query_rejected session_id=%s reason=%s", req.session_id, str(exc))
