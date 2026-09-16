@@ -50,7 +50,7 @@ Day 17: Load testing
 Day 18: Caching & token optimization
   - Task: Implement prompt result caching and token counting instrumentation. (completed)
 Day 19: Cost analysis
-  - Task: Simulate cost per 1k requests and identify hot paths to optimize.
+  - Task: Simulate cost per 1k requests and identify hot paths to optimize. (completed)
 Day 20: Orchestration overview
   - Task: Prototype a simple orchestrator (FastAPI + background worker queue) for long-running tasks.
 Day 21: Buffer / write-up

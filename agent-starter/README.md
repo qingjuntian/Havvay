@@ -238,6 +238,21 @@ LOCAL_MODEL=google/flan-t5-small
 
 The local provider requires the optional `transformers` and `torch` packages.
 
+## Cost analysis
+
+Project cost for the default 1,000-request mix with configured prices:
+
+```bash
+.venv/bin/python scripts/cost_analysis.py \
+  --input-cost-per-1m 1 \
+  --output-cost-per-1m 2
+```
+
+The report includes uncached cost, cache savings, average cost per request,
+and the highest-cost request profiles. The defaults are illustrative; use the
+provider's current prices and adjust the profiles in
+`scripts/cost_analysis.py` for production traffic.
+
 ## Project layout
 
 - src/main.py        - FastAPI app and endpoints

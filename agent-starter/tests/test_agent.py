@@ -5,6 +5,7 @@ from src.memory import SessionMemory, LongTermMemory
 from src.safety import SafetyLayer, UnsafePromptError
 from src.main import app
 from src.tools import Tools
+from scripts.cost_analysis import RequestProfile, analyze_cost
 
 
 class StubRetriever:
@@ -280,3 +281,17 @@ def test_long_term_memory_persists_and_retrieves_relevant_context():
 def test_calculator_rejects_code_execution():
     result = Tools().calc("calculate __import__('os').system('touch /tmp/should-not-exist')")
     assert result.startswith("Calculation failed:")
+
+
+def test_cost_analysis_projects_cache_savings_and_hot_paths():
+    report = analyze_cost(
+        [RequestProfile("general", 1000, 100, 50, 0.25)],
+        input_cost_per_1m=1,
+        output_cost_per_1m=2,
+    )
+
+    assert report["requests"] == 1000
+    assert report["uncached_cost_usd"] == 0.2
+    assert report["cost_usd"] == 0.15
+    assert report["cache_savings_usd"] == 0.05
+    assert report["hot_paths"] == [{"name": "general", "cost_usd": 0.15}]
