@@ -48,7 +48,7 @@ Day 16: Containerize + Docker Compose
 Day 17: Load testing
   - Task: Run a small load test (wrk or locust) to understand latency and concurrency.
 Day 18: Caching & token optimization
-  - Task: Implement prompt result caching and token counting instrumentation.
+  - Task: Implement prompt result caching and token counting instrumentation. (completed)
 Day 19: Cost analysis
   - Task: Simulate cost per 1k requests and identify hot paths to optimize.
 Day 20: Orchestration overview

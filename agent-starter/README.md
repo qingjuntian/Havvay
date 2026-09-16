@@ -30,6 +30,12 @@ On Windows PowerShell, activate with:
 Copy `.env.example` to `.env` and add the credentials for the model provider
 you want to use. The application loads `.env` automatically.
 
+Model responses are cached in-process for repeated prompts. Configure the
+cache with `AGENT_CACHE_TTL_SECONDS` (default `300`) and
+`AGENT_CACHE_MAX_ENTRIES` (default `256`); set either value to `0` to disable
+the cache. Query responses include `usage.cache_hit` and estimated token
+counts when the provider does not return usage metadata.
+
 In VS Code, select the project interpreter with **Python: Select Interpreter**
 and choose `.venv/bin/python` (or `.venv\Scripts\python.exe` on Windows).
 

@@ -1,7 +1,12 @@
 """Agent skeleton: orchestrates retriever + tools + model calls."""
 
+from collections import OrderedDict
+from threading import Lock
 from typing import Optional, Callable
+import hashlib
+import math
 import os
+import time
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -22,6 +27,8 @@ class Agent:
         self.long_term_memory = long_term_memory or LongTermMemory()
         self.safety = safety or SafetyLayer()
         self.last_usage = self._empty_usage()
+        self._response_cache = OrderedDict()
+        self._cache_lock = Lock()
 
     @staticmethod
     def _empty_usage():
@@ -32,7 +39,49 @@ class Agent:
             "completion_tokens": 0,
             "total_tokens": 0,
             "estimated_cost_usd": 0.0,
+            "cache_hit": False,
         }
+
+    @staticmethod
+    def _estimated_tokens(text: str) -> int:
+        return max(1, math.ceil(len(text or "") / 4)) if text else 0
+
+    def _cache_settings(self):
+        ttl = max(0.0, float(os.getenv("AGENT_CACHE_TTL_SECONDS", "300")))
+        max_entries = max(0, int(os.getenv("AGENT_CACHE_MAX_ENTRIES", "256")))
+        return ttl, max_entries
+
+    def _cache_key(self, prompt: str) -> str:
+        value = f"{self._provider()}:{self._model_name()}:{prompt}"
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    def _cached_response(self, prompt: str):
+        ttl, max_entries = self._cache_settings()
+        if not ttl or not max_entries:
+            return None
+        key = self._cache_key(prompt)
+        now = time.monotonic()
+        with self._cache_lock:
+            entry = self._response_cache.get(key)
+            if entry is None:
+                return None
+            created, response, usage = entry
+            if now - created >= ttl:
+                self._response_cache.pop(key, None)
+                return None
+            self._response_cache.move_to_end(key)
+            return response, usage
+
+    def _cache_response(self, prompt: str, response: str):
+        ttl, max_entries = self._cache_settings()
+        if not ttl or not max_entries:
+            return
+        key = self._cache_key(prompt)
+        with self._cache_lock:
+            self._response_cache[key] = (time.monotonic(), response, dict(self.last_usage))
+            self._response_cache.move_to_end(key)
+            while len(self._response_cache) > max_entries:
+                self._response_cache.popitem(last=False)
 
     @staticmethod
     def _usage_value(usage, name: str) -> int:
@@ -119,6 +168,9 @@ class Agent:
     def _update_usage_from_response(self, usage, model_name: str):
         prompt_tokens = self._usage_value(usage, "prompt_tokens")
         completion_tokens = self._usage_value(usage, "completion_tokens")
+        if usage is None:
+            prompt_tokens = self._estimated_tokens(self._usage_prompt)
+            completion_tokens = self._estimated_tokens(self._usage_response)
         total_tokens = self._usage_value(usage, "total_tokens") or prompt_tokens + completion_tokens
         input_rate = float(os.getenv("MOONSHOT_INPUT_COST_PER_1M_TOKENS", "0"))
         output_rate = float(os.getenv("MOONSHOT_OUTPUT_COST_PER_1M_TOKENS", "0"))
@@ -131,14 +183,29 @@ class Agent:
             "estimated_cost_usd": (
                 prompt_tokens * input_rate + completion_tokens * output_rate
             ) / 1_000_000,
+            "cache_hit": False,
         }
 
     def model_call(self, prompt: str) -> str:
+        cached = self._cached_response(prompt)
+        if cached is not None:
+            response, usage = cached
+            self.last_usage = dict(usage)
+            self.last_usage["cache_hit"] = True
+            return response
+
         if self._provider() == "local":
             self.last_usage = self._empty_usage()
             self.last_usage["provider"] = "local"
             self.last_usage["model"] = self._model_name()
-            return self._local_model_call(prompt)
+            response = self._local_model_call(prompt)
+            self._usage_prompt = prompt
+            self._usage_response = response
+            self.last_usage["prompt_tokens"] = self._estimated_tokens(prompt)
+            self.last_usage["completion_tokens"] = self._estimated_tokens(response)
+            self.last_usage["total_tokens"] = self.last_usage["prompt_tokens"] + self.last_usage["completion_tokens"]
+            self._cache_response(prompt, response)
+            return response
 
         client = self._build_client()
         model_name = self._model_name()
@@ -162,20 +229,40 @@ class Agent:
             raise RuntimeError(f"Moonshot API call failed: {exc}") from exc
 
         content: Optional[str] = completion.choices[0].message.content
+        self._usage_prompt = prompt
+        self._usage_response = content or ""
         self._update_usage_from_response(getattr(completion, "usage", None), model_name)
-        return content or ""
+        response = content or ""
+        self._cache_response(prompt, response)
+        return response
 
     def iter_model_stream(self, prompt: str):
+        cached = self._cached_response(prompt)
+        if cached is not None:
+            response, usage = cached
+            self.last_usage = dict(usage)
+            self.last_usage["cache_hit"] = True
+            yield response
+            return
+
         if self._provider() == "local":
             self.last_usage = self._empty_usage()
             self.last_usage["provider"] = "local"
             self.last_usage["model"] = self._model_name()
-            yield self._local_model_call(prompt)
+            response = self._local_model_call(prompt)
+            self._usage_prompt = prompt
+            self._usage_response = response
+            self.last_usage["prompt_tokens"] = self._estimated_tokens(prompt)
+            self.last_usage["completion_tokens"] = self._estimated_tokens(response)
+            self.last_usage["total_tokens"] = self.last_usage["prompt_tokens"] + self.last_usage["completion_tokens"]
+            self._cache_response(prompt, response)
+            yield response
             return
 
         client = self._build_client()
         model_name = self._model_name()
         final_usage = None
+        response_chunks = []
 
         try:
             stream = client.chat.completions.create(
@@ -200,12 +287,17 @@ class Agent:
                 delta = chunk.choices[0].delta
                 content = getattr(delta, "content", None)
                 if content:
+                    response_chunks.append(content)
                     yield content
                 if getattr(chunk, "usage", None) is not None:
                     final_usage = chunk.usage
         except Exception as exc:  # pragma: no cover - network / service errors should surface clearly
             raise RuntimeError(f"Moonshot streaming API call failed: {exc}") from exc
+        self._usage_prompt = prompt
+        response = "".join(response_chunks)
+        self._usage_response = response
         self._update_usage_from_response(final_usage, model_name)
+        self._cache_response(prompt, response)
 
     def stream_model_call(self, prompt: str, on_chunk: Optional[Callable[[str], None]] = None) -> str:
         chunks = []

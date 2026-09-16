@@ -75,7 +75,64 @@ def test_agent_records_model_usage_and_cost(monkeypatch):
         "completion_tokens": 25,
         "total_tokens": 125,
         "estimated_cost_usd": 0.00015,
+        "cache_hit": False,
     }
+
+
+def test_model_call_uses_cached_response(monkeypatch):
+    calls = []
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return type(
+                "Completion",
+                (),
+                {
+                    "choices": [
+                        type("Choice", (), {"message": type("Message", (), {"content": "answer"})()})()
+                    ],
+                    "usage": None,
+                },
+            )()
+
+    class FakeClient:
+        chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setenv("MOONSHOT_API_KEY", "test-key")
+    monkeypatch.setattr("src.agent.OpenAI", lambda **kwargs: FakeClient())
+
+    agent = Agent()
+    assert agent.model_call("same prompt") == "answer"
+    assert agent.model_call("same prompt") == "answer"
+    assert len(calls) == 1
+    assert agent.last_usage["cache_hit"] is True
+    assert agent.last_usage["total_tokens"] > 0
+
+
+def test_stream_model_call_caches_complete_response(monkeypatch):
+    calls = []
+
+    class FakeChunk:
+        def __init__(self, text):
+            self.choices = [type("Choice", (), {"delta": type("Delta", (), {"content": text})()})()]
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return iter([FakeChunk("hello"), FakeChunk(" world")])
+
+    class FakeClient:
+        chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setenv("MOONSHOT_API_KEY", "test-key")
+    monkeypatch.setattr("src.agent.OpenAI", lambda **kwargs: FakeClient())
+
+    agent = Agent()
+    assert agent.stream_model_call("same prompt") == "hello world"
+    assert agent.stream_model_call("same prompt") == "hello world"
+    assert len(calls) == 1
+    assert agent.last_usage["cache_hit"] is True
 
 
 def test_session_memory_keeps_recent_turns():
