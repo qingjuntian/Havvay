@@ -52,7 +52,7 @@ Day 18: Caching & token optimization
 Day 19: Cost analysis
   - Task: Simulate cost per 1k requests and identify hot paths to optimize. (completed)
 Day 20: Orchestration overview
-  - Task: Prototype a simple orchestrator (FastAPI + background worker queue) for long-running tasks.
+  - Task: Prototype a simple orchestrator (FastAPI + background worker queue) for long-running tasks. (completed)
 Day 21: Buffer / write-up
 
 Week 4 — Advanced patterns & capstone

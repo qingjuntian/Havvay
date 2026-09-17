@@ -8,18 +8,29 @@ from typing import List
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 from .agent import Agent
 from .safety import UnsafePromptError
 from .task_queue import TaskQueue, is_long_running_prompt
 
 app = FastAPI(title="Agent Starter")
 agent = Agent()
-task_queue = TaskQueue(worker=lambda prompt, session_id: agent.run(prompt, session_id=session_id))
 logger = logging.getLogger("agent_starter")
 
 
 def sse_event(payload):
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def new_request_agent():
+    return agent.new_request()
+
+
+def run_background_task(prompt, session_id):
+    return new_request_agent().run(prompt, session_id=session_id)
+
+
+task_queue = TaskQueue(worker=run_background_task)
 
 class QueryRequest(BaseModel):
     prompt: str
@@ -55,8 +66,9 @@ async def task_status(task_id: str):
 async def query(req: QueryRequest):
 
     started = time.perf_counter()
+    request_agent = new_request_agent()
     try:
-        prompt = agent.safety.validate(req.prompt)
+        prompt = request_agent.safety.validate(req.prompt)
         if is_long_running_prompt(prompt):
             task_id = task_queue.submit([prompt], session_id=req.session_id)
             return JSONResponse(
@@ -68,7 +80,7 @@ async def query(req: QueryRequest):
                     "session_id": req.session_id,
                 },
             )
-        resp = agent.run(req.prompt, session_id=req.session_id)
+        resp = await run_in_threadpool(request_agent.run, req.prompt, req.session_id)
     except UnsafePromptError as exc:
         logger.warning("query_rejected session_id=%s reason=%s", req.session_id, str(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -83,12 +95,12 @@ async def query(req: QueryRequest):
             "query_complete session_id=%s duration_ms=%.2f usage=%s",
             req.session_id,
             (time.perf_counter() - started) * 1000,
-            getattr(agent, "last_usage", {}),
+            getattr(request_agent, "last_usage", {}),
         )
     return {
         "response": resp,
         "session_id": req.session_id,
-        "usage": getattr(agent, "last_usage", {}),
+        "usage": getattr(request_agent, "last_usage", {}),
     }
 
 
@@ -96,10 +108,11 @@ async def query(req: QueryRequest):
 async def query_stream(req: QueryRequest):
     def event_stream():
         started = time.perf_counter()
+        request_agent = new_request_agent()
         try:
-            agent.last_usage = agent._empty_usage()
+            request_agent.last_usage = request_agent._empty_usage()
             yield sse_event({"type": "status", "status": "started"})
-            prompt = agent.safety.validate(req.prompt)
+            prompt = request_agent.safety.validate(req.prompt)
             if is_long_running_prompt(prompt):
                 task_id = task_queue.submit([prompt], session_id=req.session_id)
                 subscriber = task_queue.subscribe(task_id)
@@ -126,10 +139,10 @@ async def query_stream(req: QueryRequest):
                     task_queue.unsubscribe(task_id, subscriber)
 
             yield sse_event({"type": "status", "status": "retrieving_context"})
-            history = agent.memory.get(req.session_id)
-            is_follow_up = agent._is_follow_up(prompt, history)
-            long_term_ctx = agent.long_term_memory.search(prompt, top_k=2)
-            ctx = [] if is_follow_up else agent.retriever.retrieve(prompt, top_k=3)
+            history = request_agent.memory.get(req.session_id)
+            is_follow_up = request_agent._is_follow_up(prompt, history)
+            long_term_ctx = request_agent.long_term_memory.search(prompt, top_k=2)
+            ctx = [] if is_follow_up else request_agent.retriever.retrieve(prompt, top_k=3)
             memory_block = "\n---\n".join(long_term_ctx) if long_term_ctx else "No relevant long-term memory found."
             full = """
 Long-term memory (use only when relevant):
@@ -156,31 +169,31 @@ the documents.
                 )
 
             if "calculate" in prompt.lower():
-                result = agent.tools.calc(prompt)
-                agent.last_usage = agent._empty_usage()
+                result = request_agent.tools.calc(prompt)
+                request_agent.last_usage = request_agent._empty_usage()
                 payload = {
                     "type": "final",
                     "response": result,
                     "session_id": req.session_id,
-                    "usage": getattr(agent, "last_usage", {}),
+                    "usage": getattr(request_agent, "last_usage", {}),
                 }
                 yield sse_event(payload)
-                agent.memory.add(req.session_id, prompt, result)
-                agent.long_term_memory.add(req.session_id, prompt, result)
+                request_agent.memory.add(req.session_id, prompt, result)
+                request_agent.long_term_memory.add(req.session_id, prompt, result)
                 return
 
             yield sse_event({"type": "status", "status": "generating"})
             response_chunks = []
 
-            for chunk in agent.iter_model_stream(full):
+            for chunk in request_agent.iter_model_stream(full):
                 response_chunks.append(chunk)
                 event = {"type": "chunk", "content": chunk}
                 yield sse_event(event)
 
             response = "".join(response_chunks)
-            yield sse_event({"type": "final", "content": response, "session_id": req.session_id, "usage": agent.last_usage})
-            agent.memory.add(req.session_id, prompt, response)
-            agent.long_term_memory.add(req.session_id, prompt, response)
+            yield sse_event({"type": "final", "content": response, "session_id": req.session_id, "usage": request_agent.last_usage})
+            request_agent.memory.add(req.session_id, prompt, response)
+            request_agent.long_term_memory.add(req.session_id, prompt, response)
         except UnsafePromptError as exc:
             logger.warning("query_rejected session_id=%s reason=%s", req.session_id, str(exc))
             yield sse_event({"type": "error", "message": str(exc)})
@@ -195,7 +208,7 @@ the documents.
                 "query_complete session_id=%s duration_ms=%.2f usage=%s",
                 req.session_id,
                 (time.perf_counter() - started) * 1000,
-                getattr(agent, "last_usage", {}),
+                getattr(request_agent, "last_usage", {}),
             )
 
     return StreamingResponse(

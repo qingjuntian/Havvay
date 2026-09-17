@@ -1,4 +1,6 @@
 import json
+import asyncio
+import time
 
 from fastapi.testclient import TestClient
 
@@ -74,6 +76,9 @@ class FakeAgent:
         yield "streamed Chinese: 中文"
         yield " answer"
 
+    def new_request(self):
+        return self
+
 
 def test_health_endpoint():
     response = TestClient(app).get("/health")
@@ -96,6 +101,35 @@ def test_query_endpoint_uses_agent_without_external_services(monkeypatch):
         "session_id": "api-test",
         "usage": main_module.agent.last_usage,
     }
+
+
+def test_query_endpoint_runs_blocking_requests_in_parallel(monkeypatch):
+    class ConcurrentAgent(FakeAgent):
+        def new_request(self):
+            return ConcurrentAgent()
+
+        def run(self, prompt, session_id="default"):
+            time.sleep(0.1)
+            self.last_usage["model"] = prompt
+            return f"answer to {prompt}"
+
+    monkeypatch.setattr(main_module, "agent", ConcurrentAgent())
+
+    async def send_queries():
+        return await asyncio.gather(
+            main_module.query(main_module.QueryRequest(prompt="first")),
+            main_module.query(main_module.QueryRequest(prompt="second")),
+        )
+
+    started = time.perf_counter()
+    responses = asyncio.run(send_queries())
+
+    assert time.perf_counter() - started < 0.18
+    assert [response["response"] for response in responses] == [
+        "answer to first",
+        "answer to second",
+    ]
+    assert [response["usage"]["model"] for response in responses] == ["first", "second"]
 
 
 def test_query_endpoint_queues_long_running_prompt(monkeypatch):

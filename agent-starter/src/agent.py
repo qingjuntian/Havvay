@@ -42,6 +42,18 @@ class Agent:
             "cache_hit": False,
         }
 
+    def new_request(self):
+        request_agent = Agent(
+            retriever=self.retriever,
+            tools=self.tools,
+            memory=self.memory,
+            safety=self.safety,
+            long_term_memory=self.long_term_memory,
+        )
+        request_agent._response_cache = self._response_cache
+        request_agent._cache_lock = self._cache_lock
+        return request_agent
+
     @staticmethod
     def _estimated_tokens(text: str) -> int:
         return max(1, math.ceil(len(text or "") / 4)) if text else 0

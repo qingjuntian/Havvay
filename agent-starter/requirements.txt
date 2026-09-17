@@ -8,6 +8,7 @@ tqdm==4.66.1
 pytest==8.3.2
 httpx==0.24.1
 debugpy==1.8.8
+python-pptx>=1.0.2,<2.0.0
 # packaging pinned to satisfy langchain-core 0.1.x constraints
 packaging==26.3
 anyio<4.0,>=3.6

@@ -195,6 +195,38 @@ curl -N -X POST http://localhost:8000/query/stream \
   -d '{"prompt":"Hello","session_id":"demo"}'
 ```
 
+Background batch task:
+
+```bash
+curl -X POST http://localhost:8000/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"prompts":["First question","Second question"],"session_id":"batch-demo"}'
+```
+
+The response returns a `task_id` immediately with status `queued`. Poll its
+status and results with:
+
+```bash
+curl http://localhost:8000/tasks/<task_id>
+```
+
+The queue is an in-process prototype. Tasks are lost if the process restarts;
+a production deployment should replace it with a durable queue and shared
+task store.
+
+## Concurrency
+
+Regular `/query` requests run blocking model calls in FastAPI's thread pool,
+so multiple requests can make progress concurrently. Each request receives an
+isolated `Agent` instance for usage tracking while sharing the cache and
+thread-safe memory backends.
+
+Long-running tasks use `AGENT_TASK_WORKERS` concurrent in-process workers
+(default `4`). The queue, task status, session memory, and cache remain local
+to one application process. Keep Uvicorn at one worker with this prototype;
+multiple Uvicorn workers require replacing the in-process queue and memory
+with shared durable services.
+
 ## Run tests
 
 Always invoke pytest through the project interpreter so VS Code and the test
