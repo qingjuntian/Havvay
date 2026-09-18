@@ -1,6 +1,7 @@
 import json
 import asyncio
 import time
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -101,6 +102,29 @@ def test_query_endpoint_uses_agent_without_external_services(monkeypatch):
         "session_id": "api-test",
         "usage": main_module.agent.last_usage,
     }
+
+
+def test_query_endpoint_invokes_planner_executor(monkeypatch):
+    class PlanningAgent(FakeAgent):
+        def __init__(self):
+            super().__init__()
+            self.planned_prompts = []
+
+        def plan_and_execute(self, prompt, session_id="default"):
+            self.planned_prompts.append((prompt, session_id))
+            return SimpleNamespace(response="planned response")
+
+    planned_agent = PlanningAgent()
+    monkeypatch.setattr(main_module, "agent", planned_agent)
+
+    response = TestClient(app).post(
+        "/query",
+        json={"prompt": "calculate 2 + 3", "session_id": "planned-test"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["response"] == "planned response"
+    assert planned_agent.planned_prompts == [("calculate 2 + 3", "planned-test")]
 
 
 def test_query_endpoint_runs_blocking_requests_in_parallel(monkeypatch):

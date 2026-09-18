@@ -362,3 +362,9 @@ the documents.
         self.memory.add(session_id, prompt, response)
         self.long_term_memory.add(session_id, prompt, response)
         return response
+
+    def plan_and_execute(self, task: str, session_id: str = "default"):
+        """Plan a task and execute its tool or response steps."""
+        from .planner import PlannerExecutor
+
+        return PlannerExecutor(self).run(task, session_id=session_id)

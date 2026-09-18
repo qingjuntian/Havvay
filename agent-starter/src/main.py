@@ -27,7 +27,8 @@ def new_request_agent():
 
 
 def run_background_task(prompt, session_id):
-    return new_request_agent().run(prompt, session_id=session_id)
+    result = new_request_agent().plan_and_execute(prompt, session_id=session_id)
+    return result.response
 
 
 task_queue = TaskQueue(worker=run_background_task)
@@ -80,7 +81,13 @@ async def query(req: QueryRequest):
                     "session_id": req.session_id,
                 },
             )
-        resp = await run_in_threadpool(request_agent.run, req.prompt, req.session_id)
+        if hasattr(request_agent, "plan_and_execute"):
+            planned = await run_in_threadpool(
+                request_agent.plan_and_execute, req.prompt, req.session_id
+            )
+            resp = planned.response
+        else:
+            resp = await run_in_threadpool(request_agent.run, req.prompt, req.session_id)
     except UnsafePromptError as exc:
         logger.warning("query_rejected session_id=%s reason=%s", req.session_id, str(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
