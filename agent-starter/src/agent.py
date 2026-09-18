@@ -184,10 +184,11 @@ class Agent:
             prompt_tokens = self._estimated_tokens(self._usage_prompt)
             completion_tokens = self._estimated_tokens(self._usage_response)
         total_tokens = self._usage_value(usage, "total_tokens") or prompt_tokens + completion_tokens
-        input_rate = float(os.getenv("MOONSHOT_INPUT_COST_PER_1M_TOKENS", "0"))
-        output_rate = float(os.getenv("MOONSHOT_OUTPUT_COST_PER_1M_TOKENS", "0"))
+        provider = self._provider()
+        input_rate = float(os.getenv(f"{provider.upper()}_INPUT_COST_PER_1M_TOKENS", "0"))
+        output_rate = float(os.getenv(f"{provider.upper()}_OUTPUT_COST_PER_1M_TOKENS", "0"))
         self.last_usage = {
-            "provider": "moonshot",
+            "provider": provider,
             "model": model_name,
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,

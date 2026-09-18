@@ -67,6 +67,11 @@ class Executor:
         outputs = []
         for step in steps:
             validated_input = self.safety.validate(step.input)
+            if step.action == "respond" and outputs:
+                validated_input = (
+                    f"{validated_input}\n\n"
+                    f"Previous step output:\n{outputs[-1]}"
+                )
             if step.action == "tool":
                 if step.tool == "calc":
                     output = self.tools.calc(validated_input)

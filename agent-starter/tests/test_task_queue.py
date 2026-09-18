@@ -57,3 +57,47 @@ def test_task_queue_executes_tasks_in_parallel(monkeypatch):
         {"prompt": "first", "response": "done: first"},
         {"prompt": "second", "response": "done: second"},
     ]
+
+
+def test_task_queue_preserves_partial_failures(monkeypatch):
+    monkeypatch.setenv("AGENT_TASK_WORKERS", "2")
+
+    def worker(prompt, session_id):
+        if prompt == "bad":
+            raise RuntimeError("worker failed")
+        return f"done: {prompt}"
+
+    queue = TaskQueue(worker=worker)
+    task_id = queue.submit(["bad", "good"])
+    subscriber = queue.subscribe(task_id)
+
+    while True:
+        event = subscriber.get(timeout=1)
+        if event["type"] == "status" and event["status"] == "failed":
+            break
+
+    task = queue.get(task_id)
+    assert task["status"] == "failed"
+    assert task["completed"] == 2
+    assert task["failed"] == 1
+    assert task["results"] == [
+        {"prompt": "bad", "error": "worker failed"},
+        {"prompt": "good", "response": "done: good"},
+    ]
+
+
+def test_task_queue_prunes_old_terminal_tasks(monkeypatch):
+    monkeypatch.setenv("AGENT_TASK_MAX_RETAINED", "1")
+    queue = TaskQueue(worker=lambda prompt, session_id: f"done: {prompt}")
+    first = queue.submit(["first"])
+    second = queue.submit(["second"])
+
+    for task_id in (first, second):
+        for _ in range(20):
+            task = queue.get(task_id)
+            if task and task["status"] == "completed":
+                break
+            time.sleep(0.01)
+
+    assert queue.get(first) is None
+    assert queue.get(second) is not None

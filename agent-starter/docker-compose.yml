@@ -4,14 +4,15 @@ services:
       context: .
       dockerfile: Dockerfile
     command: >
-      python -Xfrozen_modules=off -m debugpy --listen 0.0.0.0:5678 -m uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+      sh -c 'if [ "$${DEBUGPY_ENABLED:-0}" = "1" ]; then exec python -Xfrozen_modules=off -m debugpy --listen 0.0.0.0:5678 -m uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload; else exec python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload; fi'
     ports:
       - "8000:8000"
-      - "5678:5678"
+      - "127.0.0.1:5678:5678"
     env_file:
       - .env
     environment:
       ENV: production
+      DEBUGPY_ENABLED: "0"
       PYTHONPATH: /app
       QDRANT_HOST: qdrant
       QDRANT_PORT: 6333

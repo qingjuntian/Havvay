@@ -80,6 +80,36 @@ def test_agent_records_model_usage_and_cost(monkeypatch):
     }
 
 
+def test_openai_usage_uses_openai_provider_and_rates(monkeypatch):
+    class Usage:
+        prompt_tokens = 100
+        completion_tokens = 25
+        total_tokens = 125
+
+    class Completion:
+        choices = [type("Choice", (), {"message": type("Message", (), {"content": "answer"})()})()]
+        usage = Usage()
+
+    class Completions:
+        def create(self, **kwargs):
+            return Completion()
+
+    class FakeClient:
+        chat = type("Chat", (), {"completions": Completions()})()
+
+    monkeypatch.setenv("MODEL_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_INPUT_COST_PER_1M_TOKENS", "3")
+    monkeypatch.setenv("OPENAI_OUTPUT_COST_PER_1M_TOKENS", "4")
+    monkeypatch.setattr("src.agent.OpenAI", lambda **kwargs: FakeClient())
+
+    agent = Agent(retriever=StubRetriever())
+    agent.run("hello")
+
+    assert agent.last_usage["provider"] == "openai"
+    assert agent.last_usage["estimated_cost_usd"] == 0.0004
+
+
 def test_model_call_uses_cached_response(monkeypatch):
     calls = []
 
@@ -273,6 +303,9 @@ def test_long_term_memory_persists_and_retrieves_relevant_context():
     store = LongTermMemory(vector_store=FakeVectorStore())
     memory_text = "User prefers concise answers and likes to use Python for data work."
     store.add("alice", "What are your preferences?", memory_text)
+    store.add("alice", "What is the user's role?", "The user is an engineer.")
+    assert len(store.vector_store.items) == 2
+    assert store.vector_store.items[0]["id"] != store.vector_store.items[1]["id"]
     matches = store.search("What coding language does the user prefer?", top_k=1)
 
     assert matches == [memory_text]

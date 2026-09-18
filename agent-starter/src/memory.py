@@ -3,6 +3,7 @@ from threading import Lock
 from typing import Dict, List, Optional
 import hashlib
 import os
+from uuid import uuid4
 
 
 def deterministic_embedding(text: str, size: int = 1536) -> List[float]:
@@ -76,7 +77,7 @@ class LongTermMemory:
             vector_store = self._get_vector_store()
             if vector_store is not None:
                 try:
-                    point_id = f"{session_id}:{len(self._fallback)}"
+                    point_id = str(uuid4())
                     vector_store.upsert(
                         ids=[point_id],
                         embeddings=[embedding],

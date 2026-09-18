@@ -42,7 +42,7 @@ and choose `.venv/bin/python` (or `.venv\Scripts\python.exe` on Windows).
 ## Debug with VS Code and Docker
 
 This is the recommended setup. Docker Compose starts both the FastAPI service
-and Qdrant, and debugpy exposes the FastAPI process on port `5678`.
+and Qdrant. The API runs normally by default; debugpy is opt-in.
 
 1. Start Docker Desktop.
 2. In the VS Code terminal, run:
@@ -50,6 +50,10 @@ and Qdrant, and debugpy exposes the FastAPI process on port `5678`.
    ```bash
    docker compose up --build
    ```
+
+  To enable the debugger, set `DEBUGPY_ENABLED=1` in `.env` before starting
+  Compose. Debugpy is published only on the host loopback interface at port
+  `5678`.
 
 3. Open **Run and Debug** in VS Code.
 4. Select **Attach to Docker FastAPI** from the configuration menu.
@@ -64,7 +68,7 @@ The API is available at `http://localhost:8000`. FastAPI's interactive API
 documentation is at `http://localhost:8000/docs`.
 
 Use **Attach to Docker FastAPI** only when you started the project with
-`docker compose up`. Use **Attach to Dev Container FastAPI** only after
+`DEBUGPY_ENABLED=1 docker compose up`. Use **Attach to Dev Container FastAPI** only after
 running **Dev Containers: Reopen in Container**. The two configurations use
 different source paths for breakpoint mapping.
 

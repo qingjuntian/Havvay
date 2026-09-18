@@ -39,6 +39,9 @@ class FakeTools:
     def calc(self, prompt):
         return "calculated"
 
+    def search_web(self, query):
+        return f"search results for: {query} (stub)"
+
 
 class FakeAgent:
     @staticmethod
@@ -199,6 +202,49 @@ def test_query_stream_endpoint_returns_sse_events(monkeypatch):
     assert {"type": "chunk", "content": " answer"} in events
     assert events[-1]["type"] == "final"
     assert events[-1]["content"] == "streamed Chinese: 中文 answer"
+
+
+def test_query_stream_endpoint_uses_planner_for_tool_steps(monkeypatch):
+    monkeypatch.setattr(main_module, "agent", FakeAgent())
+
+    response = TestClient(app).post(
+        "/query/stream",
+        json={"prompt": "search the web for FastAPI", "session_id": "plan-stream-test"},
+    )
+
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert response.status_code == 200
+    assert {"type": "status", "status": "executing_plan"} in events
+    assert events[-1]["type"] == "final"
+    assert events[-1]["content"] == "search results for: search the web for FastAPI (stub)"
+
+
+def test_query_stream_endpoint_uses_planner_for_decomposed_steps(monkeypatch):
+    monkeypatch.setattr(main_module, "agent", FakeAgent())
+
+    response = TestClient(app).post(
+        "/query/stream",
+        json={
+            "prompt": "calculate 2 + 3 then search the web for FastAPI",
+            "session_id": "multi-plan-stream-test",
+        },
+    )
+
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    steps = [event for event in events if event.get("type") == "step"]
+    assert [step["tool"] for step in steps] == ["calc", "search_web"]
+    assert events[-1]["type"] == "final"
+    assert events[-1]["content"] == (
+        "calculated\n\nsearch results for: search the web for FastAPI (stub)"
+    )
 
 
 def test_query_stream_endpoint_queues_long_running_prompt(monkeypatch):

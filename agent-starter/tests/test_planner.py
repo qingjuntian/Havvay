@@ -62,6 +62,20 @@ def test_executor_preserves_decomposed_step_order():
     assert result.response == "calculated result\n\nsearch result for search the web for FastAPI"
 
 
+def test_executor_passes_previous_output_to_later_response_step():
+    agent = FakeAgent()
+    result = PlannerExecutor(agent).run("calculate 2 + 3 then explain the result")
+
+    assert result.outputs == [
+        "calculated result",
+        "answer: explain the result\n\nPrevious step output:\ncalculated result",
+    ]
+    assert agent.calls[-1] == (
+        "explain the result\n\nPrevious step output:\ncalculated result",
+        "default",
+    )
+
+
 def test_planner_executor_uses_agent_for_general_response():
     agent = FakeAgent()
     result = PlannerExecutor(agent).run("Explain queues", session_id="demo")

@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 from .agent import Agent
+from .planner import Executor, Planner
 from .safety import UnsafePromptError
 from .task_queue import TaskQueue, is_long_running_prompt
 
@@ -145,6 +146,26 @@ async def query_stream(req: QueryRequest):
                 finally:
                     task_queue.unsubscribe(task_id, subscriber)
 
+            plan = Planner(safety=request_agent.safety).plan(prompt)
+            if len(plan) > 1 or plan[0].action == "tool":
+                yield sse_event({"type": "status", "status": "executing_plan"})
+                result = Executor(request_agent).execute(plan, session_id=req.session_id)
+                for step, output in zip(result.steps, result.outputs):
+                    yield sse_event({
+                        "type": "step",
+                        "step_id": step.id,
+                        "action": step.action,
+                        "tool": step.tool,
+                        "content": output,
+                    })
+                yield sse_event({
+                    "type": "final",
+                    "content": result.response,
+                    "session_id": req.session_id,
+                    "usage": getattr(request_agent, "last_usage", {}),
+                })
+                return
+
             yield sse_event({"type": "status", "status": "retrieving_context"})
             history = request_agent.memory.get(req.session_id)
             is_follow_up = request_agent._is_follow_up(prompt, history)
@@ -180,7 +201,7 @@ the documents.
                 request_agent.last_usage = request_agent._empty_usage()
                 payload = {
                     "type": "final",
-                    "response": result,
+                    "content": result,
                     "session_id": req.session_id,
                     "usage": getattr(request_agent, "last_usage", {}),
                 }

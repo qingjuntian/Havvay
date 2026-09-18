@@ -29,6 +29,7 @@ class TaskQueue:
     def __init__(self, worker=None):
         self.worker = worker
         max_workers = max(1, int(os.getenv("AGENT_TASK_WORKERS", "4")))
+        self.max_retained_tasks = max(1, int(os.getenv("AGENT_TASK_MAX_RETAINED", "1000")))
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="agent-task")
         self._tasks: Dict[str, Dict] = {}
         self._event_history: Dict[str, List[Dict]] = {}
@@ -43,6 +44,7 @@ class TaskQueue:
             "session_id": session_id,
             "total": len(prompts),
             "completed": 0,
+            "failed": 0,
             "results": [],
             "_results_by_index": {},
             "error": None,
@@ -52,6 +54,7 @@ class TaskQueue:
             self._event_history[task_id] = []
             self._subscribers[task_id] = []
             self._publish_locked(task_id, {"type": "status", "status": "queued"})
+            self._prune_terminal_tasks_locked()
         for prompt_index, prompt in enumerate(prompts):
             self._executor.submit(self._run_prompt, task_id, prompt_index, prompt, session_id)
         return task_id
@@ -91,13 +94,34 @@ class TaskQueue:
         try:
             response = self.worker(prompt, session_id=session_id)
         except Exception as exc:
-            self._update(task_id, status="failed", error=str(exc))
+            with self._lock:
+                task = self._tasks[task_id]
+                task["completed"] += 1
+                task["failed"] += 1
+                task["_results_by_index"][prompt_index] = {
+                    "prompt": prompt,
+                    "error": str(exc),
+                }
+                self._publish_locked(
+                    task_id,
+                    {
+                        "type": "progress",
+                        "completed": task["completed"],
+                        "total": task["total"],
+                        "failed": task["failed"],
+                    },
+                )
+                if task["completed"] == task["total"]:
+                    task["status"] = "failed"
+                    task["error"] = "One or more prompts failed."
+                    self._publish_locked(
+                        task_id,
+                        {"type": "status", "status": "failed", "error": task["error"]},
+                    )
             return
 
         with self._lock:
             task = self._tasks[task_id]
-            if task["status"] == "failed":
-                return
             task["_results_by_index"][prompt_index] = {"prompt": prompt, "response": response}
             task["completed"] += 1
             self._publish_locked(
@@ -106,11 +130,17 @@ class TaskQueue:
                     "type": "progress",
                     "completed": task["completed"],
                     "total": task["total"],
+                    "failed": task["failed"],
                 },
             )
             if task["completed"] == task["total"]:
-                task["status"] = "completed"
-                self._publish_locked(task_id, {"type": "status", "status": "completed"})
+                task["status"] = "failed" if task["failed"] else "completed"
+                event = {"type": "status", "status": task["status"]}
+                if task["failed"]:
+                    task["error"] = "One or more prompts failed."
+                    event["error"] = task["error"]
+                self._publish_locked(task_id, event)
+                self._prune_terminal_tasks_locked()
 
     def _update(self, task_id: str, **changes) -> None:
         with self._lock:
@@ -123,3 +153,16 @@ class TaskQueue:
         self._event_history[task_id].append(dict(event))
         for subscriber in self._subscribers.get(task_id, []):
             subscriber.put(dict(event))
+
+    def _prune_terminal_tasks_locked(self) -> None:
+        terminal_ids = [
+            task_id
+            for task_id, task in self._tasks.items()
+            if task["status"] in ("completed", "failed")
+            and not self._subscribers.get(task_id)
+        ]
+        excess = len(terminal_ids) - self.max_retained_tasks
+        for task_id in terminal_ids[:max(0, excess)]:
+            self._tasks.pop(task_id, None)
+            self._event_history.pop(task_id, None)
+            self._subscribers.pop(task_id, None)
