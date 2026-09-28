@@ -85,11 +85,20 @@ def locate_page_starts(pages: list[str], joined: str) -> list[int]:
 def build_timings(pdf_path: Path, chunks_dir: Path, pages_json: Path | None = None) -> dict:
     pages = page_texts(pdf_path, pages_json)
     chunks, joined = chunk_data(chunks_dir)
-    if len(pages) != 32:
-        raise ValueError(f"Expected 32 PDF pages, found {len(pages)}")
+    if not pages:
+        raise ValueError("No pages found in the rendered document")
+    if not chunks:
+        raise ValueError(f"No chunk text/audio pairs found in {chunks_dir}")
     starts = locate_page_starts(pages, joined)
     if starts != sorted(starts) or starts[-1] >= len(joined):
         raise ValueError("PDF page boundaries are not monotonic")
+    chunk_boundaries = {chunk["start"] for chunk in chunks} | {chunks[-1]["end"]}
+    for page_number, start in enumerate(starts, 1):
+        if start not in chunk_boundaries:
+            raise ValueError(
+                f"Page {page_number} starts inside a TTS chunk; regenerate text with page markers "
+                "and synthesize chunks from that text before computing timings"
+            )
 
     page_items = []
     for page_number, page_start in enumerate(starts):
@@ -99,9 +108,10 @@ def build_timings(pdf_path: Path, chunks_dir: Path, pages_json: Path | None = No
         for chunk in chunks:
             overlap = max(0, min(chunk["end"], page_end) - max(chunk["start"], page_start))
             if overlap:
-                share = chunk["duration"] * overlap / chunk["text_length"]
-                duration += share
-                assigned.append({"name": chunk["name"], "seconds": round(share, 6), "text_fraction": overlap / chunk["text_length"]})
+                if overlap != chunk["text_length"]:
+                    raise ValueError(f"Chunk {chunk['name']} crosses page {page_number} boundary")
+                duration += chunk["duration"]
+                assigned.append({"name": chunk["name"], "seconds": round(chunk["duration"], 6), "text_fraction": 1.0})
         page_items.append({
             "page": page_number + 1,
             "image_index": page_number,
@@ -122,7 +132,9 @@ def main() -> None:
     parser.add_argument("--pages-json", default=None, help="Normalized page JSON from prepare_book.py")
     args = parser.parse_args()
     result = build_timings(Path(args.pdf), Path(args.chunks_dir), Path(args.pages_json) if args.pages_json else None)
-    Path(args.output).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"Wrote {args.output}: {len(result['pages'])} pages, {result['total_duration']:.3f}s")
 
 

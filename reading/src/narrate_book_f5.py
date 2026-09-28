@@ -47,6 +47,7 @@ SPEED           = 1.2
 # ------------------------------------------------------------------
 
 SAMPLE_RATE = 24000
+PAGE_BREAK_TOKEN = "<<<BOOK_PAGE_BREAK>>>"
 HEADING_RE = re.compile(
     r"^(?:第[一二三四五六七八九十百]+章|第[一二三四五六七八九十百]+节|"
     r"[一二三四五六七八九十]+、|（[一二三四五六七八九十]+）|\([一二三四五六七八九十]+\)|\d+\.)"
@@ -118,18 +119,26 @@ def split_long(sentence: str, max_chars: int):
 
 def build_chunks(text: str):
     chunks = []
-    for para in [p for p in re.split(r"\n\s*\n", text) if p.strip()]:
-        if HEADING_RE.match(para.strip()):
-            heading = para.strip()
-            pause = 0.8 if re.match(r"第[一二三四五六七八九十百]+章", heading) else 0.6
-            chunks.append((heading, pause))
-            continue
-        para_chunks = []
-        for sentence in split_sentences(para):
-            for piece in split_long(sentence, MAX_CHARS):
-                para_chunks.append(piece.strip())
-        for i, c in enumerate(para_chunks):
-            chunks.append((c, PARAGRAPH_PAUSE if i == len(para_chunks) - 1 else SENTENCE_PAUSE))
+    pages = text.split(PAGE_BREAK_TOKEN)
+    for page_index, page_text in enumerate(pages):
+        page_chunks = []
+        for para in [p for p in re.split(r"\n\s*\n", page_text) if p.strip()]:
+            if HEADING_RE.match(para.strip()):
+                heading = para.strip()
+                pause = 0.8 if re.match(r"第[一二三四五六七八九十百]+章", heading) else 0.6
+                page_chunks.append((heading, pause))
+                continue
+            para_chunks = []
+            for sentence in split_sentences(para):
+                for piece in split_long(sentence, MAX_CHARS):
+                    para_chunks.append(piece.strip())
+            for i, chunk_text in enumerate(para_chunks):
+                page_chunks.append((chunk_text, PARAGRAPH_PAUSE if i == len(para_chunks) - 1 else SENTENCE_PAUSE))
+        if page_chunks and page_index < len(pages) - 1:
+            last_text, last_pause = page_chunks[-1]
+            if not HEADING_RE.match(last_text):
+                page_chunks[-1] = (last_text, 0.0)
+        chunks.extend(page_chunks)
     return chunks
 
 
@@ -214,7 +223,7 @@ def main():
     MAKE_MP3 = not args.no_mp3
     NFE_STEP = args.nfe_step
     SPEED = args.speed
-    AUDIO_SIGNATURE = f"ref={REFERENCE_AUDIO}|nfe={NFE_STEP}|speed={SPEED}|chars={MAX_CHARS}"
+    AUDIO_SIGNATURE = f"ref={REFERENCE_AUDIO}|ref_text={REF_TEXT}|nfe={NFE_STEP}|speed={SPEED}|chars={MAX_CHARS}"
 
     def selected_chunks(spec: str) -> set[int]:
         selected = set()

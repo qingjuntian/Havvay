@@ -21,6 +21,7 @@ HEADING_RE = re.compile(
     r"[一二三四五六七八九十]+、|（[一二三四五六七八九十]+）|\([一二三四五六七八九十]+\)|\d+\.)"
 )
 FIGURE_RE = re.compile(r"^(?:图表?|表格?)\s*\d*\s*[:：.、]?", re.IGNORECASE)
+PAGE_BREAK_TOKEN = "<<<BOOK_PAGE_BREAK>>>"
 
 
 def extract_pages(pdf: Path) -> tuple[list[str], list[dict]]:
@@ -69,16 +70,8 @@ def extract_pages(pdf: Path) -> tuple[list[str], list[dict]]:
 
 
 def join_pages_for_tts(pages: list[str]) -> str:
-    """Join PDF pages without turning a visual page wrap into a speech pause."""
-    if not pages:
-        return ""
-    text = pages[0]
-    for page in pages[1:]:
-        if HEADING_RE.match(page):
-            text += "\n\n" + page
-        else:
-            text += page
-    return text
+    """Mark page regions so TTS chunks and rendered pages remain aligned."""
+    return f"\n\n{PAGE_BREAK_TOKEN}\n\n".join(page.strip() for page in pages)
 
 
 def main() -> None:
