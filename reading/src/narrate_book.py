@@ -28,16 +28,19 @@ import shutil
 import subprocess
 
 # ----------------------------- CONFIG -----------------------------
-BOOK_FILE       = "data/book.txt"   # UTF-8 text of the book to narrate
-REFERENCE_AUDIO = "data/reference/ref_enhanced.wav" # VoiceFixer-enhanced (denoised + de-muffled, 44.1kHz). From ref.wav
+BOOK_FILE       = "/root/autodl-tmp/data/book.txt"   # UTF-8 text of the book to narrate
+REFERENCE_AUDIO = "/root/autodl-tmp/data/reference/ref_enhanced.wav" # VoiceFixer-enhanced (denoised + de-muffled, 44.1kHz). From ref.wav
 LANGUAGE        = "zh-cn"           # your book is Chinese. Use "en" for English, "ja", "ko", etc.
 OUTPUT_DIR      = "output/xtts"
-MAX_CHARS       = 80               # per-chunk cap: ~80 for zh-cn/ja/ko (XTTS limit), up to ~220 for en
+MAX_CHARS       = 60               # shorter Chinese chunks reduce drift and boundary errors
 SENTENCE_PAUSE  = 0.30            # seconds of silence inserted between chunks
 PARAGRAPH_PAUSE = 0.65           # seconds of silence at the end of a paragraph
 TEST_LIMIT      = 0               # 0 = whole book; N>0 = only the first N chunks (smoke test)
 MAKE_MP3        = True            # also encode output/audiobook.mp3
-TEMPERATURE     = 0.65           # XTTS sampling temperature (lower = steadier, higher = more expressive)
+TEMPERATURE     = 0.35           # lower temperature favors steadier pronunciation
+REPETITION_PENALTY = 5.0         # XTTS-recommended range; helps prevent repeated phrases
+ENABLE_TEXT_SPLITTING = False    # chunks are already split above; avoid a second split inside XTTS
+SPEECH_SPEED   = 0.88             # final playback speed; 1.0 is unchanged
 # ------------------------------------------------------------------
 
 SAMPLE_RATE = 24000  # XTTS-v2 output sample rate
@@ -184,7 +187,14 @@ def load_model():
     if device == "cpu":
         print("[model] CPU detected -> generation will be slow. A full book may take many hours.")
 
-    api = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to(device)
+
+    #api = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to(device)
+    model_dir = "/root/autodl-tmp/XTTS-v2"
+    api = TTS(
+        model_path=model_dir,
+        config_path=os.path.join(model_dir, "config.json"),
+        gpu=device == "cuda",
+    )
     model = api.synthesizer.tts_model  # underlying Xtts instance
 
     if not os.path.isfile(REFERENCE_AUDIO):
@@ -207,15 +217,25 @@ def synth_chunk(model, gpt_cond_latent, speaker_embedding, text, pause_after, ou
         speaker_embedding=speaker_embedding,
         temperature=TEMPERATURE,
         length_penalty=1.0,
-        repetition_penalty=2.0,
+        repetition_penalty=REPETITION_PENALTY,
         top_k=50,
         top_p=0.85,
-        enable_text_splitting=True,
+        enable_text_splitting=ENABLE_TEXT_SPLITTING,
     )
     wav = np.asarray(out["wav"], dtype=np.float32)
     if pause_after > 0:
         wav = np.concatenate([wav, np.zeros(int(SAMPLE_RATE * pause_after), dtype=np.float32)])
-    sf.write(out_path, wav, SAMPLE_RATE, subtype="PCM_16")  # PCM_16 so ffmpeg concat -c copy works
+    if SPEECH_SPEED == 1.0:
+        sf.write(out_path, wav, SAMPLE_RATE, subtype="PCM_16")
+        return
+
+    raw_path = out_path + ".raw.wav"
+    sf.write(raw_path, wav, SAMPLE_RATE, subtype="PCM_16")
+    subprocess.run(
+        [_FFMPEG_EXE, "-y", "-i", raw_path, "-filter:a", f"atempo={SPEECH_SPEED}", out_path],
+        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    os.remove(raw_path)
 
 
 def concat_audio(chunk_paths):
