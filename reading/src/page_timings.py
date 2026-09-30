@@ -21,10 +21,12 @@ def normalize(value: str) -> str:
     return match_text(value)
 
 
-def page_texts(pdf_path: Path, pages_json: Path | None = None) -> list[str]:
+def page_texts(pdf_path: Path | None, pages_json: Path | None = None) -> list[str]:
     if pages_json:
         data = json.loads(pages_json.read_text(encoding="utf-8"))
         return [page["match_text"] for page in data["pages"]]
+    if pdf_path is None:
+        raise ValueError("Provide --pages-json or --pdf")
     pages = []
     for page_number, page in enumerate(PdfReader(str(pdf_path)).pages, 1):
         text = normalize(page.extract_text() or "")
@@ -82,7 +84,7 @@ def locate_page_starts(pages: list[str], joined: str) -> list[int]:
     return starts
 
 
-def build_timings(pdf_path: Path, chunks_dir: Path, pages_json: Path | None = None) -> dict:
+def build_timings(pdf_path: Path | None, chunks_dir: Path, pages_json: Path | None = None) -> dict:
     pages = page_texts(pdf_path, pages_json)
     chunks, joined = chunk_data(chunks_dir)
     if not pages:
@@ -121,17 +123,19 @@ def build_timings(pdf_path: Path, chunks_dir: Path, pages_json: Path | None = No
             "chunks": assigned,
         })
     total = sum(item["duration"] for item in page_items)
-    return {"pdf": str(pdf_path), "chunks_dir": str(chunks_dir), "pages": page_items, "total_duration": round(total, 6)}
+    return {"pdf": str(pdf_path) if pdf_path else None, "chunks_dir": str(chunks_dir), "pages": page_items, "total_duration": round(total, 6)}
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Create page timing data from a PDF and chunk WAV files.")
-    parser.add_argument("--pdf", required=True)
+    parser.add_argument("--pdf", default=None)
     parser.add_argument("--chunks-dir", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--pages-json", default=None, help="Normalized page JSON from prepare_book.py")
     args = parser.parse_args()
-    result = build_timings(Path(args.pdf), Path(args.chunks_dir), Path(args.pages_json) if args.pages_json else None)
+    if not args.pdf and not args.pages_json:
+        parser.error("provide --pages-json or --pdf")
+    result = build_timings(Path(args.pdf) if args.pdf else None, Path(args.chunks_dir), Path(args.pages_json) if args.pages_json else None)
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")

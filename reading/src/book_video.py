@@ -29,8 +29,9 @@ def load_image_files(images_dir: str | None) -> list[Path]:
     if not images_dir:
         return []
     image_dir = Path(images_dir).resolve()
+    supported = [*image_dir.glob("*.png"), *image_dir.glob("*.jpg"), *image_dir.glob("*.jpeg")]
     return sorted(
-        image_dir.glob("*.png"),
+        supported,
         key=lambda path: [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", path.name)],
     )
 

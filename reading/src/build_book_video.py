@@ -18,11 +18,12 @@ def run(command: list[str]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build a page-timed book video from a formatted DOCX or PDF.")
+    parser = argparse.ArgumentParser(description="Build a page-timed book video from DOCX, TXT+images, or PDF.")
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--docx", help="Formatted Word document; pages and images are generated from its PDF render")
     source.add_argument("--pdf", help="Pre-rendered PDF; use with --images-dir")
-    parser.add_argument("--images-dir", default=None, help="Existing page PNGs; required only with --pdf")
+    source.add_argument("--text", help="Multi-work TXT with one '作品名称：...' section per image")
+    parser.add_argument("--images-dir", default=None, help="Existing page images; required with --pdf or --text")
     parser.add_argument("--voice", required=True, help="Raw voice sample")
     parser.add_argument("--ref-text", required=True, help="Exact transcript of the retained reference speech")
     parser.add_argument("--f5-python", default=sys.executable, help="Python executable with F5-TTS installed")
@@ -59,6 +60,13 @@ def main() -> None:
         run([sys.executable, str(SRC / "prepare_docx.py"), "--docx", args.docx,
              "--pdf-output", str(pdf), "--images-dir", str(images_dir),
              "--text-output", str(book_text), "--pages-output", str(pages_json)])
+    elif args.text:
+        if not args.images_dir:
+            raise SystemExit("--images-dir is required when using --text")
+        images_dir = work / "pages"
+        run([sys.executable, str(SRC / "prepare_illustrated_text.py"), "--text", args.text,
+             "--images-dir", args.images_dir, "--output-dir", str(work)])
+        pdf = None
     else:
         if not args.images_dir:
             raise SystemExit("--images-dir is required when using --pdf")
@@ -87,8 +95,12 @@ def main() -> None:
         print(f"[test] generated first {args.test_limit} chunks; skipping full-book page timing and video")
         print(f"[done] test audio: {audio}")
         return
-    run([sys.executable, str(SRC / "page_timings.py"), "--pdf", str(pdf),
-         "--pages-json", str(pages_json), "--chunks-dir", str(f5_dir / "chunks"), "--output", str(timings)])
+    timing_command = [sys.executable, str(SRC / "page_timings.py"),
+                      "--pages-json", str(pages_json), "--chunks-dir", str(f5_dir / "chunks"),
+                      "--output", str(timings)]
+    if pdf:
+        timing_command += ["--pdf", str(pdf)]
+    run(timing_command)
     run([sys.executable, str(SRC / "book_video.py"), "--audio", str(audio), "--images-dir", str(images_dir),
          "--timings", str(timings), "--width", str(args.width), "--height", str(args.height),
          "--fps", str(args.fps), "--transition", str(args.transition), "--output", str(ROOT / args.output)])

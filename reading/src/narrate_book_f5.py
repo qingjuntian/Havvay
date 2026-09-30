@@ -49,8 +49,11 @@ SPEED           = 1.2
 SAMPLE_RATE = 24000
 PAGE_BREAK_TOKEN = "<<<BOOK_PAGE_BREAK>>>"
 HEADING_RE = re.compile(
-    r"^(?:第[一二三四五六七八九十百]+章|第[一二三四五六七八九十百]+节|"
+    r"^(?:作品名称[：:].+|画面基础信息|艺术表现巧思|深层精神寓意|相关创作背景|"
+    r"画面艺术巧思|深层意境表达|相关历史意义|图文内核的奇妙呼应|"
+    r"第[一二三四五六七八九十百]+章|第[一二三四五六七八九十百]+节|"
     r"[一二三四五六七八九十]+、|（[一二三四五六七八九十]+）|\([一二三四五六七八九十]+\)|\d+\.)"
+    r".*$"
 )
 
 # Resolve relative paths against the PROJECT ROOT (parent of this src/ folder).
@@ -122,18 +125,29 @@ def build_chunks(text: str):
     pages = text.split(PAGE_BREAK_TOKEN)
     for page_index, page_text in enumerate(pages):
         page_chunks = []
-        for para in [p for p in re.split(r"\n\s*\n", page_text) if p.strip()]:
-            if HEADING_RE.match(para.strip()):
-                heading = para.strip()
-                pause = 0.8 if re.match(r"第[一二三四五六七八九十百]+章", heading) else 0.6
-                page_chunks.append((heading, pause))
-                continue
+        body_lines = []
+
+        def flush_body() -> None:
+            body = " ".join(line.strip() for line in body_lines if line.strip()).strip()
+            body_lines.clear()
+            if not body:
+                return
             para_chunks = []
-            for sentence in split_sentences(para):
+            for sentence in split_sentences(body):
                 for piece in split_long(sentence, MAX_CHARS):
                     para_chunks.append(piece.strip())
             for i, chunk_text in enumerate(para_chunks):
                 page_chunks.append((chunk_text, PARAGRAPH_PAUSE if i == len(para_chunks) - 1 else SENTENCE_PAUSE))
+
+        for line in page_text.splitlines():
+            heading = line.strip()
+            if heading and HEADING_RE.match(heading):
+                flush_body()
+                pause = 0.8 if re.match(r"第[一二三四五六七八九十百]+章", heading) else 0.6
+                page_chunks.append((heading, pause))
+            else:
+                body_lines.append(line)
+        flush_body()
         if page_chunks and page_index < len(pages) - 1:
             last_text, last_pause = page_chunks[-1]
             if not HEADING_RE.match(last_text):

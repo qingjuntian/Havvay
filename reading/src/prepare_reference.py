@@ -48,8 +48,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Trim silence from a voice reference.")
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--text-output", required=True)
-    parser.add_argument("--ref-text", required=True, help="Exact transcript of the retained audio")
+    parser.add_argument("--text-output", default=None)
+    parser.add_argument("--ref-text", default=None, help="Exact transcript of the retained audio")
     parser.add_argument("--max-seconds", type=float, default=12.0)
     parser.add_argument("--threshold", type=float, default=0.015)
     parser.add_argument("--pad", type=float, default=0.08)
@@ -62,8 +62,15 @@ def main() -> None:
         raise SystemExit(f"Trimmed reference is {duration:.2f}s; shorten the source or increase --max-seconds")
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     write_audio(Path(args.output), trimmed, sample_rate)
-    Path(args.text_output).write_text(args.ref_text.strip() + "\n", encoding="utf-8")
-    print(f"Wrote {args.output}: {duration:.2f}s; transcript saved to {args.text_output}")
+    if args.ref_text and not args.text_output:
+        raise SystemExit("--text-output is required when --ref-text is provided")
+    if args.text_output and args.ref_text:
+        text_output = Path(args.text_output)
+        text_output.parent.mkdir(parents=True, exist_ok=True)
+        text_output.write_text(args.ref_text.strip() + "\n", encoding="utf-8")
+        print(f"Wrote {args.output}: {duration:.2f}s; transcript saved to {text_output}")
+    else:
+        print(f"Wrote {args.output}: {duration:.2f}s; transcript not supplied")
 
 
 if __name__ == "__main__":
