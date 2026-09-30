@@ -8,7 +8,7 @@
   "workspaceFolder": "/app",
   "shutdownAction": "stopCompose",
   "runServices": ["web", "qdrant"],
-  "forwardPorts": [8000, 5678, 6333],
+  "forwardPorts": [8000, 5678],
   "customizations": {
     "vscode": {
       "extensions": [

@@ -1,5 +1,7 @@
 services:
   web:
+    environment:
+      DEBUGPY_ENABLED: "1"
     volumes:
       - .:/app:cached
     working_dir: /app

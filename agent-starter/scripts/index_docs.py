@@ -2,7 +2,8 @@
 Index local text/markdown files into Qdrant via src.vector_store.VectorStore.
 
 Usage:
-  python scripts/index_docs.py --dir data/docs --batch-size 64
+    python scripts/index_docs.py --dir data/docs --batch-size 64
+    python scripts/index_docs.py --dir data/docs --recreate
 
 Behavior:
 - Walks the directory for .txt and .md files
@@ -125,7 +126,8 @@ def read_file(path: str) -> str:
 
 
 def index_directory(doc_dir: str, batch_size: int = 64):
-    vs = VectorStore(collection_name=os.getenv("QDRANT_COLLECTION", "agent_docs"))
+    collection_name = os.getenv("QDRANT_COLLECTION", "agent_docs")
+    vs = VectorStore(collection_name=collection_name)
 
     docs_indexed = 0
     batch_ids = []
@@ -164,11 +166,38 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dir", default="data/docs", help="Directory containing docs to index (default: data/docs)")
     parser.add_argument("--batch-size", type=int, default=64, help="Batch size for upserts")
+    parser.add_argument(
+        "--recreate",
+        action="store_true",
+        help="Delete the target collection before indexing its documents",
+    )
     args = parser.parse_args()
 
     if not os.path.isdir(args.dir):
         print(f"Docs directory not found: {args.dir}", file=sys.stderr)
         sys.exit(2)
+
+    if args.recreate:
+        collection_name = os.getenv("QDRANT_COLLECTION", "agent_docs")
+        qdrant_url = os.getenv("QDRANT_URL")
+        if not qdrant_url:
+            host = os.getenv("QDRANT_HOST", "127.0.0.1")
+            port = int(os.getenv("QDRANT_PORT", 6333))
+            qdrant_url = f"http://{host}:{port}"
+        try:
+            import httpx
+
+            response = httpx.delete(
+                f"{qdrant_url.rstrip('/')}/collections/{collection_name}",
+                timeout=10.0,
+                trust_env=False,
+            )
+            if response.status_code not in (200, 404):
+                response.raise_for_status()
+            print(f"Recreated collection target: {collection_name}")
+        except Exception as exc:
+            print(f"Failed to recreate collection {collection_name}: {exc}", file=sys.stderr)
+            sys.exit(1)
 
     index_directory(args.dir, batch_size=args.batch_size)
 

@@ -51,9 +51,13 @@ and Qdrant. The API runs normally by default; debugpy is opt-in.
    docker compose up --build
    ```
 
-  To enable the debugger, set `DEBUGPY_ENABLED=1` in `.env` before starting
-  Compose. Debugpy is published only on the host loopback interface at port
-  `5678`.
+  To enable the debugger for the regular Compose workflow, run:
+
+  ```bash
+  DEBUGPY_ENABLED=1 docker compose up --build
+  ```
+
+  Debugpy is published only on the host loopback interface at port `5678`.
 
 3. Open **Run and Debug** in VS Code.
 4. Select **Attach to Docker FastAPI** from the configuration menu.
@@ -106,7 +110,10 @@ The Dev Container forwards these ports to your computer:
 
 - `8000` - FastAPI
 - `5678` - debugpy
-- `6333` - Qdrant
+
+Qdrant is a separate Compose service. Docker publishes its port `6333` directly
+to your computer; it is intentionally not listed in `forwardPorts` because that
+would forward port `6333` from the `web` container instead of the Qdrant service.
 
 To leave the Dev Container, run **Dev Containers: Reopen Folder Locally**
 from the Command Palette. VS Code stops the Compose services according to the
@@ -130,8 +137,9 @@ curl http://localhost:8000/health
 ```
 
 Wait for the health check to return `{"status":"ok"}`, then attach with
-**Attach to Docker FastAPI**. If the container exits again, inspect its
-startup logs:
+**Attach to Docker FastAPI** for the regular Compose workflow or
+**Attach to Dev Container FastAPI** for the Dev Container workflow. If the
+container exits again, inspect its startup logs:
 
 ```bash
 docker compose logs --tail=100 web
@@ -218,6 +226,38 @@ The queue is an in-process prototype. Tasks are lost if the process restarts;
 a production deployment should replace it with a durable queue and shared
 task store.
 
+## Index documents into Qdrant
+
+The retriever reads the `agent_docs` collection. Index `.txt` and `.md` files
+from `data/docs` with the web service's Compose-network connection to Qdrant:
+
+```bash
+docker compose exec web python scripts/index_docs.py --dir data/docs
+```
+
+To replace the collection contents instead of upserting into the existing
+collection, add `--recreate`:
+
+```bash
+docker compose exec web python scripts/index_docs.py \
+  --dir data/docs \
+  --recreate
+```
+
+When running the script outside Docker, set `QDRANT_HOST=127.0.0.1` and use
+the host-published Qdrant port `6333`. The script uses provider embeddings when
+an embedding-capable API key is configured and otherwise uses deterministic
+local embeddings. Qdrant data persists in the `qdrant-data` Compose volume.
+
+Interactive requests also pass through a deterministic planner. It splits
+tasks on "then" / "and then" or newlines, routes calculation and search-like
+steps to the example tools, and sends other steps to the agent. Later response
+steps receive the previous step's output. The calculator is a restricted
+expression evaluator; web search currently returns a placeholder response.
+This is heuristic planning, not an LLM planner or production search integration.
+`/query/stream` reports planned tool work with `executing_plan`, `step`, and
+`final` SSE events.
+
 ## Concurrency
 
 Regular `/query` requests run blocking model calls in FastAPI's thread pool,
@@ -248,12 +288,13 @@ On Windows PowerShell:
 
 ## Model providers
 
-The default provider is Moonshot:
+The default provider is Moonshot. If `MOONSHOT_MODEL` is unset, the code uses
+`kimi-k3`; the `.env.example` file sets it explicitly to `kimi-k2.6`:
 
 ```text
 MODEL_PROVIDER=moonshot
 MOONSHOT_API_KEY=...
-MOONSHOT_MODEL=kimi-k3
+MOONSHOT_MODEL=kimi-k2.6
 ```
 
 OpenAI-compatible APIs can be selected with:
@@ -291,14 +332,23 @@ provider's current prices and adjust the profiles in
 
 ## Project layout
 
-- src/main.py        - FastAPI app and endpoints
-- src/agent.py       - Agent skeleton (retriever, tool invocation)
-- src/retriever.py   - Vector DB retriever stub (Qdrant example)
-- src/tools.py       - Example tool implementations
-- requirements.txt   - Python dependencies
-- Dockerfile         - Build image
-- docker-compose.yml - (optional) compose file for local dev
-- tests/             - unit tests (pytest)
+- `src/main.py` - FastAPI health, query, SSE, and background-task endpoints
+- `src/agent.py` - RAG context, memory, provider calls, usage, and response cache
+- `src/planner.py` - deterministic planner and tool/agent executor
+- `src/task_queue.py` - in-process task queue and event subscriptions
+- `src/retriever.py`, `src/memory.py`, `src/vector_store.py` - retrieval and memory backends
+- `src/tools.py` - restricted calculator and placeholder web search
+- `requirements.txt` - Python dependencies
+- `Dockerfile`, `docker-compose.yml` - API and Qdrant local container setup
+- `tests/` - pytest unit and API tests
+
+## Current implementation limits
+
+The planner uses keyword heuristics, web search is a stub, and session/task
+state and the response cache are process-local. Long-term memory uses Qdrant
+when available and falls back to process memory. The safety layer validates
+inputs against a small denylist; it is not a comprehensive safety system.
+Run one Uvicorn worker with the current in-process task and memory services.
 
 ## Notes
 

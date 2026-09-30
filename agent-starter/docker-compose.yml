@@ -12,7 +12,7 @@ services:
       - .env
     environment:
       ENV: production
-      DEBUGPY_ENABLED: "0"
+      DEBUGPY_ENABLED: "${DEBUGPY_ENABLED:-0}"
       PYTHONPATH: /app
       QDRANT_HOST: qdrant
       QDRANT_PORT: 6333

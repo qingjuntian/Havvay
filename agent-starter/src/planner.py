@@ -39,7 +39,7 @@ class Planner:
 
     def plan(self, task: str) -> List[PlanStep]:
         task = self.safety.validate(task)
-        clauses = [clause.strip() for clause in re.split(r"\s+(?:and then|then)\s+|\n+", task, flags=re.IGNORECASE) if clause.strip()]
+        clauses = [clause.strip() for clause in re.split(r"\s*,?\s+(?:and then|then)\s+|\n+", task, flags=re.IGNORECASE) if clause.strip()]
         steps = []
         for index, clause in enumerate(clauses, start=1):
             normalized = clause.lower()

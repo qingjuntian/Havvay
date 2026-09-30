@@ -50,6 +50,15 @@ def test_planner_decomposes_ordered_tool_steps():
     ]
 
 
+def test_planner_removes_comma_before_step_separator():
+    steps = Planner().plan("calculate 17 * 23, then calculate 144 / 12")
+
+    assert [step.input for step in steps] == [
+        "calculate 17 * 23",
+        "calculate 144 / 12",
+    ]
+
+
 def test_executor_preserves_decomposed_step_order():
     result = Executor(FakeAgent()).execute(
         Planner().plan("calculate 2 + 3 then search the web for FastAPI")

@@ -1,0 +1,38 @@
+@baseUrl = http://localhost:8000
+
+### Health check
+GET {{baseUrl}}/health
+
+### Multi-step calculator stream
+POST {{baseUrl}}/query/stream
+Content-Type: application/json
+
+{
+  "prompt": "Calculate 17 * 23, then calculate 144 / 12",
+  "session_id": "http-file-calc-test"
+}
+
+### Search tool followed by a model response
+POST {{baseUrl}}/query/stream
+Content-Type: application/json
+
+{
+  "prompt": "check what kind of abilities does the Agent Starter have, then summarize the results in no more than 300 characters",
+  "session_id": "agent-starter-ability"
+}
+
+### Submit background tasks
+# @name submitTasks
+POST {{baseUrl}}/tasks
+Content-Type: application/json
+
+{
+  "prompts": [
+    "Calculate 17 * 23",
+    "Calculate 144 / 12"
+  ],
+  "session_id": "http-file-tasks-test"
+}
+
+### Get task status and results
+GET {{baseUrl}}/tasks/{{submitTasks.response.body.$.task_id}}
