@@ -24,7 +24,7 @@ FIGURE_RE = re.compile(r"^(?:图表?|表格?)\s*\d*\s*[:：.、]?", re.IGNORECAS
 PAGE_BREAK_TOKEN = "<<<BOOK_PAGE_BREAK>>>"
 
 
-def extract_pages(pdf: Path) -> tuple[list[str], list[dict]]:
+def extract_page_records(pdf: Path) -> tuple[list[dict], list[dict]]:
     raw_pages = [(page.extract_text() or "") for page in PdfReader(str(pdf)).pages]
     repeated = set()
     line_sets = []
@@ -65,8 +65,19 @@ def extract_pages(pdf: Path) -> tuple[list[str], list[dict]]:
             else:
                 body.append(line)
         flush_body()
-        pages.append("\n\n".join(normalize_text(block) for block in kept if block))
+        page_text = "\n\n".join(normalize_text(block) for block in kept if block)
+        pages.append({
+            "page": page_number,
+            "raw_text": raw_pages[page_number - 1],
+            "text": page_text,
+            "match_text": match_text(page_text),
+        })
     return pages, checklist
+
+
+def extract_pages(pdf: Path) -> tuple[list[str], list[dict]]:
+    records, checklist = extract_page_records(pdf)
+    return [page["text"] for page in records], checklist
 
 
 def join_pages_for_tts(pages: list[str]) -> str:
@@ -81,16 +92,16 @@ def main() -> None:
     parser.add_argument("--pages-output", required=True)
     args = parser.parse_args()
 
-    pages, checklist = extract_pages(Path(args.pdf))
+    pages, checklist = extract_page_records(Path(args.pdf))
     text_output = Path(args.text_output)
     pages_output = Path(args.pages_output)
     text_output.parent.mkdir(parents=True, exist_ok=True)
     pages_output.parent.mkdir(parents=True, exist_ok=True)
-    text_output.write_text(join_pages_for_tts(pages) + "\n", encoding="utf-8")
+    text_output.write_text(join_pages_for_tts([page["text"] for page in pages]) + "\n", encoding="utf-8")
     payload = {
         "pdf": str(Path(args.pdf)),
         "checklist": checklist,
-        "pages": [{"page": i, "text": text, "match_text": match_text(text)} for i, text in enumerate(pages, 1)],
+        "pages": pages,
     }
     pages_output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     checklist_output = pages_output.with_name("book_checklist.json")

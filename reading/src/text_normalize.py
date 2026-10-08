@@ -41,22 +41,24 @@ def _year(match: re.Match[str]) -> str:
 def normalize_text(text: str) -> str:
     """Make text readable by Chinese TTS while retaining useful punctuation."""
     text = text.replace("％", "%")
-    text = re.sub(r"\s+", "", text)
-    text = re.sub(r"(\d{4})年", _year, text)
+    text = re.sub(r"[ \t\f\v]+", " ", text)
+    text = re.sub(r" *\r?\n *", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    text = re.sub(r"(\d{4})\s*年", _year, text)
     text = re.sub(
-        r"(\d+)\s*[~～至到]\s*(\d+)(岁|年|月|人|项|个)?",
+        r"(\d+)\s*[~～至到]\s*(\d+)\s*(岁|年|月|人|项|个)?",
         lambda m: chinese_number(m.group(1)) + "到" + chinese_number(m.group(2)) + (m.group(3) or ""),
         text,
     )
     text = re.sub(
-        r"(\d+)\.(\d+)(岁|年|月|%)?",
+        r"(\d+)\.(\d+)\s*(岁|年|月|%)?",
         lambda m: ("百分之" if m.group(3) == "%" else "") + chinese_number(m.group(1)) + "点" + "".join(SMALL_NUMBERS[int(d)] for d in m.group(2)) + ("" if m.group(3) == "%" else (m.group(3) or "")),
         text,
     )
     text = re.sub(r"^(\d+)\.\s*(?=[^\d])", lambda m: chinese_number(m.group(1)) + "、", text)
-    text = re.sub(r"(\d+)%", lambda m: "百分之" + chinese_number(m.group(1)), text)
-    text = re.sub(r"(\d+)世纪", lambda m: chinese_number(m.group(1)) + "世纪", text)
-    text = re.sub(r"(\d+)岁", lambda m: chinese_number(m.group(1)) + "岁", text)
+    text = re.sub(r"(\d+)\s*%", lambda m: "百分之" + chinese_number(m.group(1)), text)
+    text = re.sub(r"(\d+)\s*世纪", lambda m: chinese_number(m.group(1)) + "世纪", text)
+    text = re.sub(r"(\d+)\s*岁", lambda m: chinese_number(m.group(1)) + "岁", text)
     return text
 
 

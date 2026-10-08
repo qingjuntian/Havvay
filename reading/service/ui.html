@@ -1,0 +1,533 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reading Studio</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f2f1eb;
+      --surface: #fffefa;
+      --ink: #202823;
+      --muted: #68736c;
+      --line: #d9ddd5;
+      --green: #1f5a47;
+      --green-soft: #e6f0e9;
+      --coral: #c66b4e;
+      --coral-soft: #f7e9e3;
+      --gold: #d3a64b;
+      --shadow: 0 12px 34px rgb(31 54 43 / 7%);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font: 15px/1.5 "Avenir Next", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    }
+    button, input, textarea { font: inherit; }
+    button { cursor: pointer; }
+    .shell { min-height: 100vh; display: grid; grid-template-columns: 300px minmax(0, 1fr); }
+    aside {
+      background: #e8ece5;
+      border-right: 1px solid var(--line);
+      padding: 25px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 22px;
+    }
+    .brand { display: flex; align-items: center; gap: 11px; padding: 0 8px; }
+    .brand-mark { width: 35px; height: 35px; border-radius: 11px 11px 11px 3px; background: var(--green); position: relative; }
+    .brand-mark::before, .brand-mark::after { content: ""; position: absolute; left: 9px; right: 8px; height: 2px; background: #f3d98c; transform: rotate(-18deg); }
+    .brand-mark::before { top: 13px; }
+    .brand-mark::after { top: 20px; right: 13px; }
+    .brand strong { display: block; font-size: 16px; letter-spacing: 0; }
+    .brand small { color: var(--muted); font-size: 11px; }
+    .upload-box { background: var(--surface); padding: 16px; border: 1px solid var(--line); border-radius: 6px; box-shadow: var(--shadow); }
+    .upload-box h2 { margin: 0 0 12px; font-size: 14px; }
+    .upload-box input[type=file] { width: 100%; font-size: 12px; color: var(--muted); }
+    .upload-box input[type=text] { width: 100%; height: 38px; margin: 11px 0; padding: 0 10px; border: 1px solid var(--line); border-radius: 4px; }
+    .primary, .secondary { border: 0; border-radius: 4px; min-height: 38px; padding: 0 13px; }
+    .primary { background: var(--green); color: white; }
+    .primary:hover { background: #174835; }
+    .secondary { background: var(--green-soft); color: var(--green); }
+    .secondary:hover { background: #d5e7da; }
+    .book-nav { min-height: 0; overflow: auto; }
+    .nav-label { margin: 0 8px 9px; color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase; }
+    .book-list { display: grid; gap: 5px; }
+    .book-row { display: flex; align-items: stretch; gap: 4px; min-width: 0; }
+    .book-item { flex: 1; min-width: 0; width: auto; text-align: left; background: transparent; color: var(--ink); border: 1px solid transparent; border-radius: 4px; padding: 10px 9px; }
+    .book-item:hover, .book-item.active { background: var(--surface); border-color: var(--line); }
+    .book-item strong { display: block; overflow-wrap: anywhere; font-size: 13px; font-weight: 600; }
+    .book-item small { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; }
+    .book-delete { align-self: center; flex: 0 0 auto; border: 1px solid transparent; border-radius: 3px; background: transparent; color: #9b4938; padding: 6px 7px; font-size: 11px; }
+    .book-delete:hover, .book-delete:focus-visible { border-color: #e3b5a8; background: var(--coral-soft); }
+    main { min-width: 0; padding: 31px clamp(18px, 4vw, 56px) 55px; }
+    .topline { display: flex; justify-content: space-between; align-items: center; gap: 14px; margin-bottom: 25px; }
+    .eyebrow { color: var(--coral); font-size: 11px; font-weight: 700; text-transform: uppercase; }
+    h1 { margin: 4px 0 0; font-size: clamp(22px, 2.4vw, 30px); line-height: 1.2; overflow-wrap: anywhere; }
+    .refresh { border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--ink); padding: 8px 12px; }
+    .status-line { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; margin: 0 0 20px; }
+    .status-dot { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 50%; background: var(--gold); }
+    .status-dot.ready { background: var(--green); }
+    .stage-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0 0 25px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .stage { padding: 11px 9px; color: #89928b; border-bottom: 3px solid transparent; font-size: 12px; }
+    .stage.current { color: var(--green); border-bottom-color: var(--green); font-weight: 700; }
+    .section { margin-top: 24px; }
+    .section-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 11px; }
+    .section-head h2 { margin: 0; font-size: 16px; }
+    .section-head small { color: var(--muted); }
+    .page-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 13px; }
+    .page-item { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 8px; box-shadow: var(--shadow); }
+    .page-zoom { display: block; width: 100%; padding: 0; border: 0; background: transparent; }
+    .page-zoom:focus-visible { outline: 3px solid var(--gold); outline-offset: 3px; }
+    .page-item img { display: block; width: 100%; height: 225px; object-fit: contain; background: #e9e6dc; }
+    .page-item figcaption { color: var(--muted); padding: 7px 1px 1px; font-size: 11px; }
+    .page-viewer { width: min(96vw, 1280px); height: min(94vh, 1100px); max-width: none; max-height: none; padding: 14px; border: 1px solid #48524b; border-radius: 5px; background: #202823; color: #fffefa; }
+    .page-viewer::backdrop { background: rgb(12 17 14 / 82%); }
+    .page-viewer[open] { display: flex; flex-direction: column; }
+    .viewer-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 12px; }
+    .viewer-toolbar p { margin: 0; font-size: 13px; }
+    .viewer-actions { display: flex; gap: 8px; }
+    .viewer-actions button { min-height: 36px; padding: 0 11px; border: 1px solid #68736c; border-radius: 3px; background: #303b34; color: #fffefa; }
+    .viewer-actions button:hover:not(:disabled) { background: #405047; }
+    .viewer-actions button:disabled { opacity: 0.45; cursor: default; }
+    .page-viewer-image { display: block; min-height: 0; width: 100%; height: 100%; object-fit: contain; background: #171d19; }
+    .text-panel { background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 12px; }
+    textarea { display: block; width: 100%; min-height: 280px; resize: vertical; border: 1px solid var(--line); border-radius: 3px; padding: 12px; color: var(--ink); background: #fff; font: 13px/1.8 "SFMono-Regular", Consolas, monospace; }
+    .actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 10px; }
+    .events { border-left: 2px solid var(--line); margin: 8px 0 0 5px; padding: 1px 0 1px 16px; display: grid; gap: 11px; }
+    .event { color: var(--muted); font-size: 12px; }
+    .event strong { color: var(--ink); font-weight: 600; }
+    .empty { min-height: 55vh; display: grid; align-content: center; justify-items: center; text-align: center; color: var(--muted); }
+    .empty-mark { width: 76px; height: 95px; margin-bottom: 15px; border: 1px solid #aeb8ae; border-radius: 3px 12px 12px 3px; background: linear-gradient(90deg, #dce6dc 0 9px, #fffefa 9px); box-shadow: 10px 8px 0 -3px #d6b978; transform: rotate(-4deg); }
+    .notice { color: var(--muted); font-size: 12px; margin: 7px 0 0; }
+    .media-player { display: block; width: min(100%, 760px); margin-top: 8px; background: #202823; border-radius: 4px; }
+    .reference-form { display: grid; gap: 10px; max-width: 760px; background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 14px; }
+    .reference-form input[type=file] { max-width: 100%; }
+    .reference-form textarea { min-height: 86px; }
+    #message { min-height: 20px; margin-top: 8px; color: var(--coral); font-size: 12px; }
+    @media (max-width: 760px) {
+      .shell { grid-template-columns: 1fr; }
+      aside { border-right: 0; border-bottom: 1px solid var(--line); padding: 15px; gap: 13px; }
+      .upload-box { padding: 12px; }
+      .book-nav { max-height: 160px; }
+      main { padding: 22px 15px 38px; }
+      .stage-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .page-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .page-item img { height: 210px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside>
+      <div class="brand"><span class="brand-mark" aria-hidden="true"></span><div><strong>Reading Studio</strong><small>BOOK PRODUCTION</small></div></div>
+      <form class="upload-box" id="upload-form">
+        <h2>新建书籍</h2>
+        <input type="file" name="docx" accept=".docx" required aria-label="选择 Word 文档">
+        <input type="text" name="title" placeholder="书名（可选）" aria-label="书名">
+        <button class="primary" type="submit">上传并开始分页</button>
+        <div id="message" role="status"></div>
+      </form>
+      <nav class="book-nav" aria-label="书籍列表">
+        <p class="nav-label">书籍工作区</p>
+        <div class="book-list" id="book-list"></div>
+      </nav>
+    </aside>
+    <main id="main">
+      <div class="empty"><div class="empty-mark" aria-hidden="true"></div><h1>选择一本书开始审核</h1><p>上传 DOCX 后，这里会显示分页结果与待确认文本。</p></div>
+    </main>
+  </div>
+  <dialog class="page-viewer" id="page-viewer" aria-label="页面图片放大查看">
+    <div class="viewer-toolbar">
+      <p id="page-viewer-label"></p>
+      <div class="viewer-actions">
+        <button type="button" id="page-viewer-prev" aria-label="上一页">上一页</button>
+        <button type="button" id="page-viewer-next" aria-label="下一页">下一页</button>
+        <button type="button" id="page-viewer-close" aria-label="关闭放大预览">关闭</button>
+      </div>
+    </div>
+    <img class="page-viewer-image" id="page-viewer-image" alt="">
+  </dialog>
+  <script>
+    const listNode = document.querySelector("#book-list");
+    const mainNode = document.querySelector("#main");
+    const messageNode = document.querySelector("#message");
+    const pageViewer = document.querySelector("#page-viewer");
+    const pageViewerImage = document.querySelector("#page-viewer-image");
+    const pageViewerLabel = document.querySelector("#page-viewer-label");
+    const pageViewerPrevious = document.querySelector("#page-viewer-prev");
+    const pageViewerNext = document.querySelector("#page-viewer-next");
+    let activeBookId = null;
+    let activeStatus = "";
+    let viewerPages = [];
+    let viewerPageIndex = 0;
+
+    function showViewerPage(index) {
+      viewerPageIndex = Math.max(0, Math.min(index, viewerPages.length - 1));
+      const artifact = viewerPages[viewerPageIndex];
+      pageViewerImage.src = artifact.url;
+      pageViewerImage.alt = `第 ${artifact.metadata.page} 页放大预览`;
+      pageViewerLabel.textContent = `第 ${artifact.metadata.page} 页 / 共 ${viewerPages.length} 页`;
+      pageViewerPrevious.disabled = viewerPageIndex === 0;
+      pageViewerNext.disabled = viewerPageIndex === viewerPages.length - 1;
+    }
+
+    function openPageViewer(pages, index) {
+      viewerPages = pages;
+      showViewerPage(index);
+      pageViewer.showModal();
+    }
+
+    pageViewerPrevious.addEventListener("click", () => showViewerPage(viewerPageIndex - 1));
+    pageViewerNext.addEventListener("click", () => showViewerPage(viewerPageIndex + 1));
+    document.querySelector("#page-viewer-close").addEventListener("click", () => pageViewer.close());
+    pageViewer.addEventListener("click", event => {
+      if (event.target === pageViewer) pageViewer.close();
+    });
+    document.addEventListener("keydown", event => {
+      if (!pageViewer.open) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        pageViewer.close();
+      } else if (event.key === "ArrowLeft") {
+        showViewerPage(viewerPageIndex - 1);
+      } else if (event.key === "ArrowRight") {
+        showViewerPage(viewerPageIndex + 1);
+      } else if (event.key === "Home") {
+        showViewerPage(0);
+      } else if (event.key === "End") {
+        showViewerPage(viewerPages.length - 1);
+      }
+    });
+
+    async function api(url, options = {}) {
+      const response = await fetch(url, options);
+      const body = response.headers.get("content-type")?.includes("application/json") ? await response.json() : null;
+      if (!response.ok) throw new Error(body?.detail || body?.error || response.statusText);
+      return body;
+    }
+
+    function element(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    }
+
+    function textStatsLabel(book) {
+      if (book.text_char_count === null || book.text_char_count === undefined) return "文本待生成";
+      const count = new Intl.NumberFormat("zh-CN").format(book.text_char_count);
+      return `${count} 字 · ${book.page_count} 页`;
+    }
+
+    async function loadBooks() {
+      const books = await api("/api/books");
+      listNode.replaceChildren();
+      for (const book of books) {
+        const row = element("div", "book-row");
+        const button = element("button", `book-item${book.id === activeBookId ? " active" : ""}`);
+        button.type = "button";
+        button.dataset.bookId = book.id;
+        button.append(
+          element("strong", "", book.title),
+          element("small", "", `${textStatsLabel(book)} · ${book.current_stage} · ${book.status}`),
+        );
+        button.addEventListener("click", () => openBook(book.id));
+        const remove = element("button", "book-delete", "删除");
+        remove.type = "button";
+        remove.setAttribute("aria-label", `删除书籍《${book.title}》及其所有文件`);
+        remove.title = "删除这本书及其所有上传和生成文件";
+        remove.addEventListener("click", () => deleteBook(book));
+        row.append(button, remove);
+        listNode.append(row);
+      }
+      if (activeBookId) openBook(activeBookId);
+    }
+
+    async function deleteBook(book) {
+      const confirmed = window.confirm(
+        `确定永久删除《${book.title}》吗？\n\n此操作会删除这本书的上传文件、生成的音视频、页面图片、处理记录和确认记录，且无法撤销。`,
+      );
+      if (!confirmed) return;
+      try {
+        await api(`/api/books/${book.id}`, { method: "DELETE" });
+        if (activeBookId === book.id) {
+          activeBookId = null;
+          mainNode.replaceChildren();
+          const empty = element("div", "empty");
+          empty.append(
+            element("div", "empty-mark"),
+            element("h1", "", "选择一本书开始审核"),
+            element("p", "", "上传 DOCX 后，这里会显示分页结果与待确认文本。"),
+          );
+          mainNode.append(empty);
+        }
+        await loadBooks();
+        messageNode.textContent = `《${book.title}》及其文件已删除`;
+      } catch (error) {
+        messageNode.textContent = error.message;
+      }
+    }
+
+    function latestArtifact(book, stage, kind) {
+      return book.artifacts
+        .filter(item => item.stage === stage && item.kind === kind)
+        .sort((a, b) => b.version - a.version)[0];
+    }
+
+    function addSection(parent, title, detail) {
+      const section = element("section", "section");
+      const head = element("div", "section-head");
+      head.append(element("h2", "", title));
+      if (detail) head.append(element("small", "", detail));
+      section.append(head);
+      parent.append(section);
+      return section;
+    }
+
+    async function openBook(bookId) {
+      activeBookId = bookId;
+      const book = await api(`/api/books/${bookId}`);
+      activeStatus = book.status;
+      listNode.querySelectorAll(".book-item").forEach(button => button.classList.remove("active"));
+      const selected = [...listNode.querySelectorAll(".book-item")].find(button => button.dataset.bookId === book.id);
+      selected?.classList.add("active");
+      mainNode.replaceChildren();
+
+      const top = element("div", "topline");
+      const heading = document.createElement("div");
+      heading.append(element("div", "eyebrow", "BOOK WORKFLOW"), element("h1", "", book.title));
+      const refresh = element("button", "refresh", "刷新状态");
+      refresh.type = "button";
+      refresh.addEventListener("click", () => openBook(bookId));
+      top.append(heading, refresh);
+      mainNode.append(top);
+
+      const status = element("div", "status-line");
+      status.append(
+        element("span", `status-dot${book.status.includes("review") ? " ready" : ""}`),
+        element("span", "", `${textStatsLabel(book)} · ${book.current_stage} · ${book.status}`),
+      );
+      mainNode.append(status);
+      if (["failed", "queue_unavailable"].includes(book.status)) {
+        const retry = element("button", "secondary", "重试当前步骤");
+        retry.type = "button";
+        retry.addEventListener("click", async () => {
+          try {
+            if (book.current_stage === "document") await api(`/api/books/${bookId}/prepare-document`, { method: "POST" });
+            else await api(`/api/books/${bookId}/jobs/${book.current_stage}`, { method: "POST" });
+            await loadBooks();
+          } catch (error) { messageNode.textContent = error.message; }
+        });
+        mainNode.append(retry);
+      }
+      const strip = element("div", "stage-strip");
+      const stageNames = ["pages", "text", "reference", "preview", "final"];
+      const stageFor = {
+        pages: ["pages_review"], text: ["text_review"],
+        reference: ["reference", "reference_preparation", "reference_review"],
+        preview: ["preview_audio", "preview_audio_review", "preview_video", "preview_video_review"],
+        final: ["full_audio", "final_audio_review", "full_video", "final_video_review", "complete"],
+      };
+      const currentIndex = Math.max(0, stageNames.findIndex(name => stageFor[name].includes(book.current_stage)));
+      for (const [index, label] of ["页面", "文本", "参考声音", "五页预览", "全书成品"].entries()) {
+        strip.append(element("div", `stage${index === currentIndex ? " current" : ""}`, `${index + 1}. ${label}`));
+      }
+      mainNode.append(strip);
+
+      const images = book.artifacts.filter(item => item.kind === "page_image").sort((a, b) => a.metadata.page - b.metadata.page);
+      if (images.length) {
+        const section = addSection(mainNode, "页面预览", `${images.length} 页`);
+        const grid = element("div", "page-grid");
+        for (const [index, artifact] of images.entries()) {
+          const figure = element("figure", "page-item");
+          const image = document.createElement("img");
+          image.src = artifact.url;
+          image.alt = `第 ${artifact.metadata.page} 页`;
+          image.loading = "lazy";
+          const zoomButton = element("button", "page-zoom");
+          zoomButton.type = "button";
+          zoomButton.setAttribute("aria-label", `放大查看第 ${artifact.metadata.page} 页`);
+          zoomButton.addEventListener("click", () => openPageViewer(images, index));
+          zoomButton.append(image);
+          figure.append(zoomButton, element("figcaption", "", `第 ${artifact.metadata.page} 页 · 点击放大`));
+          grid.append(figure);
+        }
+        section.append(grid);
+        if (book.current_stage === "pages_review" && book.status === "awaiting_page_review") {
+          const actions = element("div", "actions");
+          const approve = element("button", "primary", "确认页面，继续审核文本");
+          approve.type = "button";
+          approve.addEventListener("click", () => approveStage(bookId, "pages", approve));
+          actions.append(approve);
+          section.append(actions);
+        }
+      }
+
+      const textArtifact = latestArtifact(book, "text", "normalized_text");
+      if (textArtifact) {
+        const section = addSection(mainNode, "TTS 文本", "可在确认前修订数字读法或提取错误");
+        const panel = element("div", "text-panel");
+        const textarea = document.createElement("textarea");
+        textarea.setAttribute("aria-label", "归一化后的书籍文本");
+        textarea.value = await (await fetch(textArtifact.url)).text();
+        const textEditable = book.current_stage === "text_review" && book.status === "awaiting_text_review";
+        textarea.readOnly = !textEditable;
+        panel.append(textarea);
+        const actions = element("div", "actions");
+        if (textEditable) {
+          const save = element("button", "secondary", "保存文本修改");
+          save.type = "button";
+          save.addEventListener("click", async () => {
+            try {
+              await api(`/api/books/${bookId}/text`, {
+                method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: textarea.value }),
+              });
+              await openBook(bookId);
+            } catch (error) { messageNode.textContent = error.message; }
+          });
+          actions.append(save);
+          const approve = element("button", "primary", "确认文本");
+          approve.type = "button";
+          approve.addEventListener("click", () => approveStage(bookId, "text", approve));
+          actions.append(approve);
+        }
+        panel.append(actions);
+        section.append(panel);
+      }
+
+      if (book.current_stage === "reference" && book.status === "awaiting_reference") {
+        const section = addSection(mainNode, "声音参考", "上传一段清晰、连续的声音，并填写与录音逐字对应的 REF_TEXT");
+        const form = element("form", "reference-form");
+        const voiceInput = document.createElement("input");
+        voiceInput.type = "file";
+        voiceInput.name = "voice";
+        voiceInput.accept = ".wav,.mp3,.m4a,.flac,.ogg";
+        voiceInput.required = true;
+        voiceInput.setAttribute("aria-label", "声音采样文件");
+        const transcript = document.createElement("textarea");
+        transcript.name = "ref_text";
+        transcript.placeholder = "输入录音中实际说出的准确文字";
+        transcript.required = true;
+        transcript.setAttribute("aria-label", "声音采样对应的 REF_TEXT");
+        const submit = element("button", "primary", "上传并处理声音");
+        submit.type = "submit";
+        form.append(voiceInput, transcript, submit);
+        form.addEventListener("submit", async event => {
+          event.preventDefault();
+          try {
+            await api(`/api/books/${bookId}/reference`, { method: "POST", body: new FormData(form) });
+            await loadBooks();
+          } catch (error) { messageNode.textContent = error.message; }
+        });
+        section.append(form);
+      }
+
+      const processedReference = latestArtifact(book, "reference_review", "processed_audio");
+      if (processedReference) {
+        const section = addSection(mainNode, "处理后的参考音频", "请试听处理结果并核对转写");
+        const player = document.createElement("audio");
+        player.controls = true;
+        player.src = processedReference.url;
+        player.className = "media-player";
+        section.append(player);
+        const transcriptArtifact = latestArtifact(book, "reference_review", "ref_text");
+        if (transcriptArtifact) {
+          const transcriptText = document.createElement("pre");
+          transcriptText.textContent = await (await fetch(transcriptArtifact.url)).text();
+          section.append(transcriptText);
+        }
+        if (book.current_stage === "reference_review" && book.status === "awaiting_reference_review") {
+          const approve = element("button", "primary", "确认参考音频和 REF_TEXT");
+          approve.type = "button";
+          approve.addEventListener("click", () => approveStage(bookId, "reference", approve));
+          section.append(approve);
+        }
+      }
+
+      if (book.current_stage === "preview_audio" && book.status === "ready") {
+        const section = addSection(mainNode, "前五页音频", "按完整页面生成，不截断页面内的 TTS chunk");
+        const start = element("button", "primary", "生成前五页试听");
+        start.type = "button";
+        start.addEventListener("click", () => startJob(bookId, "preview_audio"));
+        section.append(start);
+      }
+      for (const [stage, kind, label, playerType, reviewStage, reviewStatus, approvalStage, approvalLabel] of [
+        ["preview_audio_review", "audiobook_mp3", "前五页试听音频", "audio", "preview_audio_review", "awaiting_preview_audio_review", "preview_audio", "确认试听音频，生成预览视频"],
+        ["preview_video_review", "video_mp4", "前五页预览视频", "video", "preview_video_review", "awaiting_preview_video_review", "preview_video", "确认预览，开始全书合成"],
+        ["final_audio_review", "audiobook_mp3", "全书音频", "audio", "final_audio_review", "awaiting_final_audio_review", "final_audio", "确认全书音频，生成最终视频"],
+        ["final_video_review", "video_mp4", "最终读书视频", "video", "final_video_review", "awaiting_final_video_review", "final_video", "确认最终视频"],
+      ]) {
+        const artifact = latestArtifact(book, stage, kind);
+        if (!artifact) continue;
+        const section = addSection(mainNode, label, artifact.metadata.page_count ? `${artifact.metadata.page_count} 页` : "");
+        const player = document.createElement(playerType);
+        player.controls = true;
+        player.src = artifact.url;
+        player.className = "media-player";
+        if (playerType === "video") player.playsInline = true;
+        section.append(player);
+        if (book.current_stage === reviewStage && book.status === reviewStatus) {
+          const approve = element("button", "primary", approvalLabel);
+          approve.type = "button";
+          approve.addEventListener("click", () => approveStage(bookId, approvalStage, approve));
+          section.append(approve);
+        }
+      }
+
+      const eventSection = addSection(mainNode, "处理记录", `${book.events.length} 条事件`);
+      const events = element("div", "events");
+      for (const event of [...book.events].reverse()) {
+        const item = element("div", "event");
+        item.append(element("strong", "", `${event.event_type} · ${event.stage}`), document.createTextNode(`  ${event.created_at}`));
+        if (event.note) item.append(document.createElement("br"), document.createTextNode(event.note));
+        events.append(item);
+      }
+      eventSection.append(events);
+    }
+
+    async function approveStage(bookId, stage, button) {
+      if (button?.disabled) return;
+      if (button) button.disabled = true;
+      try {
+        await api(`/api/books/${bookId}/approve`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ stage }),
+        });
+        await loadBooks();
+      } catch (error) {
+        messageNode.textContent = error.message;
+        if (button) button.disabled = false;
+      }
+    }
+
+    async function startJob(bookId, stage) {
+      try {
+        await api(`/api/books/${bookId}/jobs/${stage}`, { method: "POST" });
+        await loadBooks();
+      } catch (error) { messageNode.textContent = error.message; }
+    }
+
+    document.querySelector("#upload-form").addEventListener("submit", async event => {
+      event.preventDefault();
+      const uploadForm = event.currentTarget;
+      messageNode.textContent = "正在上传…";
+      try {
+        const form = new FormData(uploadForm);
+        const result = await api("/api/books", { method: "POST", body: form });
+        messageNode.textContent = result.status === "queued" ? "已加入分页队列" : result.job.error;
+        uploadForm.reset();
+        activeBookId = result.id;
+        await loadBooks();
+      } catch (error) { messageNode.textContent = error.message; }
+    });
+
+    loadBooks().catch(error => { messageNode.textContent = error.message; });
+    window.setInterval(() => {
+      if (activeBookId && ["queued", "running", "preparing"].includes(activeStatus)) openBook(activeBookId).catch(() => {});
+    }, 5000);
+  </script>
+</body>
+</html>
