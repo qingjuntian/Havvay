@@ -112,6 +112,38 @@ async def query(req: QueryRequest):
     }
 
 
+@app.post("/query/multi-agent")
+async def query_multi_agent(req: QueryRequest):
+    started = time.perf_counter()
+    request_agent = new_request_agent()
+    try:
+        prompt = request_agent.safety.validate(req.prompt)
+        result = await run_in_threadpool(
+            request_agent.multi_agent_plan_and_execute, prompt, req.session_id
+        )
+    except UnsafePromptError as exc:
+        logger.warning("multi_agent_query_rejected session_id=%s reason=%s", req.session_id, str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        logger.error("multi_agent_query_failed session_id=%s error=%s", req.session_id, str(exc))
+        raise HTTPException(status_code=502, detail="Upstream agent service failed.") from exc
+    except Exception as exc:
+        logger.exception("multi_agent_query_unexpected_failure session_id=%s", req.session_id)
+        raise HTTPException(status_code=500, detail="Internal agent error.") from exc
+    finally:
+        logger.info(
+            "multi_agent_query_complete session_id=%s duration_ms=%.2f usage=%s",
+            req.session_id,
+            (time.perf_counter() - started) * 1000,
+            getattr(request_agent, "last_usage", {}),
+        )
+    return {
+        "response": result.response,
+        "session_id": req.session_id,
+        "usage": getattr(request_agent, "last_usage", {}),
+    }
+
+
 @app.post("/query/stream")
 async def query_stream(req: QueryRequest):
     def event_stream():

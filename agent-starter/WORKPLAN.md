@@ -1,9 +1,9 @@
 4-week Day-by-Day Plan and Implementation Status
 
-Status snapshot: 2026-09-29. `[x]` means implemented, `[~]` means partially
-implemented or configured but not fully verified, and `[ ]` means the planned
-deliverable is not present yet. These statuses describe this repository, not
-production readiness.
+Status snapshot: 2026-10-08. `[x]` means implemented, `[~]` means partially
+implemented or configured but not fully verified, `[ ]` means the planned
+deliverable is not present yet, `[>]` marks the current focus, and `[D]` means
+deferred. These statuses describe this repository, not production readiness.
 
 This plan is an intensive, hands-on ramp intended to make you productive building agents quickly. Each day has a focused goal plus a short exercise and deliverable.
 
@@ -64,9 +64,10 @@ Week 4 — Advanced patterns & capstone
 Day 22: Planner + executor
   - [x] Task: Implement a deterministic planner that decomposes tasks and an executor that calls supported tools or the agent. It is heuristic-based, not an LLM planner.
 Day 23: Red-team + safety eval
-  - [ ] Task: Run extensive adversarial prompt tests and document mitigations.
+  - [D] Deferred: return to this before treating the safety layer as production-ready.
 Day 24: Multi-agent coordination
-  - [ ] Task: Prototype agent-to-agent message passing (planner -> workers -> aggregator).
+  - [x] Implemented planner -> worker messages -> ordered aggregation via `Agent.multi_agent_plan_and_execute()` and the opt-in `POST /query/multi-agent` endpoint; API coverage passes (13 tests).
+  - [D] Distinct specialist-agent personas deferred; current workers share one agent and tool set.
 Day 25: CI/CD + infra
   - [~] Task: GitHub Actions runs the test suite; Docker image build in CI and deployment-specific notes remain outstanding.
 Day 26: Finalize capstone

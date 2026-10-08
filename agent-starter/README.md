@@ -199,6 +199,29 @@ curl -X POST http://localhost:8000/query \
   -d '{"prompt":"Hello","session_id":"demo"}'
 ```
 
+Coordinated query:
+
+```bash
+curl -X POST http://localhost:8000/query/multi-agent \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"calculate 2 + 3 then search the web for FastAPI","session_id":"demo"}'
+```
+
+### `/query` vs. `/query/multi-agent`
+
+| | `/query` | `/query/multi-agent` |
+| --- | --- | --- |
+| Planner | Same deterministic `Planner` | Same deterministic `Planner` |
+| Execution | `PlannerExecutor` runs plan steps sequentially | `MultiAgentCoordinator` runs consecutive tool steps concurrently, then aggregates results in plan order |
+| Agent roles | One agent and its tools | Same agent and tools; workers are not distinct specialist agents |
+| Best fit | Default path for regular requests and dependent step sequences | Opt-in experiment when a plan has independent tool steps that can run in parallel |
+| Response | `response`, `session_id`, and `usage` | Same response shape |
+
+The multi-agent route is an experimental coordinated-execution path, not a
+separate-agent system: both routes share the same planner, and worker steps use
+the same agent and tool set. Use `/query` by default; opt into
+`/query/multi-agent` to exercise parallel tool-step execution.
+
 Streaming query:
 
 ```bash
@@ -257,6 +280,13 @@ expression evaluator; web search currently returns a placeholder response.
 This is heuristic planning, not an LLM planner or production search integration.
 `/query/stream` reports planned tool work with `executing_plan`, `step`, and
 `final` SSE events.
+
+An experimental planner-to-worker coordinator is available through
+`POST /query/multi-agent` and `Agent.multi_agent_plan_and_execute()`. It
+dispatches adjacent tool steps to a bounded worker pool, then aggregates results
+in plan order; later agent-response steps receive the preceding result. Worker
+messages and results carry a run ID and step ID. Workers currently share the
+same `Agent` and tool instances rather than running separate agent personas.
 
 ## Concurrency
 
@@ -335,6 +365,7 @@ provider's current prices and adjust the profiles in
 - `src/main.py` - FastAPI health, query, SSE, and background-task endpoints
 - `src/agent.py` - RAG context, memory, provider calls, usage, and response cache
 - `src/planner.py` - deterministic planner and tool/agent executor
+- `src/multi_agent.py` - experimental worker-message coordinator and ordered result aggregator
 - `src/task_queue.py` - in-process task queue and event subscriptions
 - `src/retriever.py`, `src/memory.py`, `src/vector_store.py` - retrieval and memory backends
 - `src/tools.py` - restricted calculator and placeholder web search

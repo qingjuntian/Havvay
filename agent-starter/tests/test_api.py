@@ -130,6 +130,33 @@ def test_query_endpoint_invokes_planner_executor(monkeypatch):
     assert planned_agent.planned_prompts == [("calculate 2 + 3", "planned-test")]
 
 
+def test_multi_agent_query_endpoint_invokes_multi_agent_execution(monkeypatch):
+    class MultiAgentExecution(FakeAgent):
+        def __init__(self):
+            super().__init__()
+            self.multi_agent_calls = []
+
+        def multi_agent_plan_and_execute(self, prompt, session_id="default"):
+            self.multi_agent_calls.append((prompt, session_id))
+            return SimpleNamespace(response="multi-agent response")
+
+    multi_agent = MultiAgentExecution()
+    monkeypatch.setattr(main_module, "agent", multi_agent)
+
+    response = TestClient(app).post(
+        "/query/multi-agent",
+        json={"prompt": "coordinate these steps", "session_id": "multi-agent-test"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "response": "multi-agent response",
+        "session_id": "multi-agent-test",
+        "usage": multi_agent.last_usage,
+    }
+    assert multi_agent.multi_agent_calls == [("coordinate these steps", "multi-agent-test")]
+
+
 def test_query_endpoint_runs_blocking_requests_in_parallel(monkeypatch):
     class ConcurrentAgent(FakeAgent):
         def new_request(self):

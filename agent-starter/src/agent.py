@@ -369,3 +369,9 @@ the documents.
         from .planner import PlannerExecutor
 
         return PlannerExecutor(self).run(task, session_id=session_id)
+
+    def multi_agent_plan_and_execute(self, task: str, session_id: str = "default"):
+        """Run an opt-in worker-coordinated plan and aggregate its results."""
+        from .multi_agent import MultiAgentCoordinator
+
+        return MultiAgentCoordinator(self).run(task, session_id=session_id)
