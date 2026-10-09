@@ -109,14 +109,14 @@ def init_db() -> None:
         )
 
 
-def create_book(book_id: str, title: str) -> None:
+def create_book(book_id: str, title: str, source_description: str = "Laid-out PDF uploaded") -> None:
     now = _now()
     with connect() as db:
         db.execute(
             "INSERT INTO books(id, title, current_stage, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
             (book_id, title, "document", "uploaded", now, now),
         )
-    add_event(book_id, "document", "book_created", "user", "Laid-out PDF uploaded")
+    add_event(book_id, "document", "book_created", "user", source_description)
 
 
 def get_book(book_id: str) -> dict[str, Any] | None:

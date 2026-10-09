@@ -14,10 +14,11 @@ from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
 from service import store
-from src.text_normalize import normalize_text
+from src.text_normalize import match_text, normalize_text
 
 MAX_UPLOAD_BYTES = int(os.environ.get("READING_MAX_UPLOAD_BYTES", str(200 * 1024 * 1024)))
 MAX_PAGE_IMAGE_BYTES = int(os.environ.get("READING_MAX_PAGE_IMAGE_BYTES", str(25 * 1024 * 1024)))
+MAX_IMAGE_BOOK_PAGES = int(os.environ.get("READING_MAX_IMAGE_BOOK_PAGES", "500"))
 UI_PATH = Path(__file__).with_name("ui.html")
 app = FastAPI(title="Reading Audiobook Service", version="0.1.0")
 
@@ -72,6 +73,70 @@ def _enqueue_job(book_id: str, stage: str, task_name: str) -> dict:
 
 def _enqueue_document_job(book_id: str) -> dict:
     return _enqueue_job(book_id, "document", "service.worker.prepare_document")
+
+
+async def _save_image_pages(
+    book_id: str,
+    images: list[UploadFile],
+    submitted_texts: list[str],
+    start_page: int = 1,
+) -> list[dict]:
+    input_dir = store.book_directory(book_id) / "inputs"
+    images_dir = input_dir / "pages"
+    images_dir.mkdir(parents=True, exist_ok=True)
+    total_bytes = 0
+    page_metadata = []
+    try:
+        from PIL import Image, ImageOps, UnidentifiedImageError
+
+        created_paths = []
+        for page_offset, (image, text) in enumerate(zip(images, submitted_texts)):
+            page_number = start_page + page_offset
+            filename = Path(image.filename or f"page_{page_number:04d}.png").name
+            raw_image = await image.read(MAX_PAGE_IMAGE_BYTES + 1)
+            total_bytes += len(raw_image)
+            if total_bytes > MAX_UPLOAD_BYTES:
+                raise HTTPException(status_code=413, detail="Combined page images exceed the configured upload limit")
+            if not raw_image:
+                raise HTTPException(status_code=400, detail=f"Page image {page_number} is empty")
+            if len(raw_image) > MAX_PAGE_IMAGE_BYTES:
+                raise HTTPException(status_code=413, detail=f"Page image {page_number} exceeds the 25 MB limit")
+            try:
+                with Image.open(io.BytesIO(raw_image)) as source:
+                    if source.format not in {"PNG", "JPEG", "WEBP"}:
+                        raise HTTPException(status_code=415, detail=f"Unsupported image format on page {page_number}")
+                    if source.width * source.height > 100_000_000:
+                        raise HTTPException(status_code=413, detail=f"Page image {page_number} dimensions are too large")
+                    normalized = ImageOps.exif_transpose(source).convert("RGB")
+                    output_path = images_dir / f"page_{page_number:04d}.png"
+                    normalized.save(output_path, format="PNG", optimize=True)
+                    created_paths.append(output_path)
+            except HTTPException:
+                raise
+            except (UnidentifiedImageError, OSError, ValueError) as exc:
+                raise HTTPException(status_code=415, detail=f"Page image {page_number} is not a valid supported image") from exc
+            page_metadata.append({
+                "page": page_number,
+                "filename": filename,
+                "width": normalized.width,
+                "height": normalized.height,
+                "text": text.strip(),
+            })
+    except Exception:
+        for path in locals().get("created_paths", []):
+            path.unlink(missing_ok=True)
+        raise
+    finally:
+        for image in images:
+            await image.close()
+
+    for item in page_metadata:
+        image_path = images_dir / f"page_{item['page']:04d}.png"
+        store.add_artifact(
+            book_id, "input", "source_image", image_path, _sha256(image_path), "image/png",
+            {key: item[key] for key in ("page", "filename", "width", "height")},
+        )
+    return page_metadata
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -132,6 +197,182 @@ async def create_book(pdf: UploadFile = File(...), title: str = Form(default="")
     return {"id": book_id, "title": book_title, "status": job["status"], "job": job}
 
 
+@app.post("/api/books/image-books", status_code=201)
+def create_image_book_draft(title: str = Form(default="")) -> dict:
+    book_id = str(uuid.uuid4())
+    book_title = title.strip() or "图片故事"
+    store.create_book(book_id, book_title, "Image book created; waiting for pages")
+    store.set_book_state(book_id, "document", "awaiting_image_pages")
+    return {"id": book_id, "title": book_title, "status": "awaiting_image_pages"}
+
+
+def _parse_image_page_texts(images: list[UploadFile], page_texts: str) -> list[str]:
+    if not images or len(images) > MAX_IMAGE_BOOK_PAGES:
+        raise HTTPException(status_code=400, detail=f"Upload between 1 and {MAX_IMAGE_BOOK_PAGES} page images")
+    try:
+        submitted_texts = json.loads(page_texts)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Page texts must be valid JSON") from exc
+    if not isinstance(submitted_texts, list) or len(submitted_texts) != len(images):
+        raise HTTPException(status_code=400, detail="Provide exactly one text entry for each page image")
+    if any(not isinstance(text, str) or not text.strip() for text in submitted_texts):
+        raise HTTPException(status_code=400, detail="Every page needs non-empty TTS text")
+    if any(store.PAGE_BREAK_TOKEN in text for text in submitted_texts):
+        raise HTTPException(status_code=400, detail="Page-break markers are inserted automatically; remove them from page text")
+    if sum(len(text) for text in submitted_texts) > 2_000_000:
+        raise HTTPException(status_code=413, detail="Page texts exceed the 2 MB limit")
+    return submitted_texts
+
+
+@app.post("/api/books/{book_id}/image-pages", status_code=202)
+async def upload_image_book_pages(
+    book_id: str,
+    images: list[UploadFile] = File(...),
+    page_texts: str = Form(...),
+) -> dict:
+    book = store.get_book(book_id)
+    if book is None:
+        raise HTTPException(status_code=404, detail="Book not found")
+    submitted_texts = _parse_image_page_texts(images, page_texts)
+    is_image_book = any(
+        item["stage"] == "input" and item["kind"] == "source_page_texts"
+        for item in book["artifacts"]
+    )
+    if book["current_stage"] == "document" and book["status"] == "awaiting_image_pages" and not is_image_book:
+        page_metadata = await _save_image_pages(book_id, images, submitted_texts)
+        texts_path = store.book_directory(book_id) / "inputs" / "page_texts.json"
+        texts_path.write_text(json.dumps(page_metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+        store.add_artifact(
+            book_id, "input", "source_page_texts", texts_path, _sha256(texts_path),
+            "application/json", {"page_count": len(page_metadata)},
+        )
+        job = _enqueue_job(book_id, "document", "service.worker.prepare_image_book")
+        store.add_event(book_id, "document", "image_pages_uploaded", "user", f"Uploaded {len(page_metadata)} image/text pages")
+        return {"id": book_id, "title": book["title"], "page_count": len(page_metadata), "status": job["status"], "job": job}
+
+    if not is_image_book:
+        raise HTTPException(status_code=409, detail="Additional image pages can only be added to an image book")
+    if store.count_active_jobs(book_id):
+        raise HTTPException(status_code=409, detail="Wait for this book's active task to finish before adding pages")
+
+    page_metadata_artifacts = [
+        item for item in book["artifacts"]
+        if item["stage"] == "pages" and item["kind"] == "page_metadata" and not item.get("stale")
+    ]
+    text_artifacts = [
+        item for item in book["artifacts"]
+        if item["stage"] == "text" and item["kind"] == "normalized_text" and not item.get("stale")
+    ]
+    if not page_metadata_artifacts or not text_artifacts:
+        raise HTTPException(status_code=409, detail="Finish initial image-page preparation before adding more pages")
+    latest_pages_artifact = max(page_metadata_artifacts, key=lambda item: item["version"])
+    latest_text_artifact = max(text_artifacts, key=lambda item: item["version"])
+    service_home = store.service_home().resolve()
+    pages_path = (service_home / latest_pages_artifact["path"]).resolve()
+    text_path = (service_home / latest_text_artifact["path"]).resolve()
+    pages_path.relative_to(service_home)
+    text_path.relative_to(service_home)
+    pages_payload = json.loads(pages_path.read_text(encoding="utf-8"))
+    existing_pages = pages_payload["pages"]
+    if len(existing_pages) + len(images) > MAX_IMAGE_BOOK_PAGES:
+        raise HTTPException(status_code=400, detail=f"An image book can contain at most {MAX_IMAGE_BOOK_PAGES} pages")
+    current_text = text_path.read_text(encoding="utf-8")
+    current_text_pages = current_text.split(store.PAGE_BREAK_TOKEN)
+    if len(current_text_pages) != len(existing_pages):
+        raise HTTPException(status_code=409, detail="Current TTS text and image pages are out of sync")
+    normalized_new_pages = [normalize_text(text) for text in submitted_texts]
+    if any(not text for text in normalized_new_pages):
+        raise HTTPException(status_code=400, detail="Every added page must contain readable TTS text after normalization")
+    if len(current_text) + sum(map(len, normalized_new_pages)) > 2_000_000:
+        raise HTTPException(status_code=413, detail="Combined book text exceeds the 2 MB limit")
+
+    first_new_page = len(existing_pages) + 1
+    new_page_metadata = await _save_image_pages(book_id, images, submitted_texts, first_new_page)
+    for page, normalized_text in zip(new_page_metadata, normalized_new_pages):
+        existing_pages.append({
+            "page": page["page"],
+            "raw_text": page["text"],
+            "text": normalized_text,
+            "match_text": match_text(normalized_text),
+            "source_image": page["filename"],
+        })
+
+    pages_output = store.book_directory(book_id) / "artifacts" / "pages" / "metadata" / f"v{latest_pages_artifact['version'] + 1}" / "book_pages.json"
+    pages_output.parent.mkdir(parents=True, exist_ok=True)
+    pages_output.write_text(json.dumps(pages_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    store.add_artifact(
+        book_id, "pages", "page_metadata", pages_output, _sha256(pages_output), "application/json",
+        {**latest_pages_artifact["metadata"], "appended_pages": len(new_page_metadata)},
+    )
+    checklist_artifacts = [
+        item for item in book["artifacts"]
+        if item["stage"] == "pages" and item["kind"] == "checklist" and not item.get("stale")
+    ]
+    if checklist_artifacts:
+        latest_checklist = max(checklist_artifacts, key=lambda item: item["version"])
+        checklist_path = (service_home / latest_checklist["path"]).resolve()
+        checklist_path.relative_to(service_home)
+        checklist_output = pages_output.with_name("book_checklist.json")
+        checklist_output.write_bytes(checklist_path.read_bytes())
+        store.add_artifact(
+            book_id, "pages", "checklist", checklist_output, _sha256(checklist_output), "application/json",
+            {**latest_checklist["metadata"], "appended_pages": len(new_page_metadata)},
+        )
+
+    source_text_artifacts = [
+        item for item in book["artifacts"]
+        if item["stage"] == "input" and item["kind"] == "source_page_texts"
+    ]
+    latest_source_text = max(source_text_artifacts, key=lambda item: item["version"])
+    source_path = (service_home / latest_source_text["path"]).resolve()
+    source_path.relative_to(service_home)
+    source_pages = json.loads(source_path.read_text(encoding="utf-8"))
+    source_pages.extend(new_page_metadata)
+    source_output = store.book_directory(book_id) / "inputs" / "page_texts" / f"v{latest_source_text['version'] + 1}.json"
+    source_output.parent.mkdir(parents=True, exist_ok=True)
+    source_output.write_text(json.dumps(source_pages, ensure_ascii=False, indent=2), encoding="utf-8")
+    store.add_artifact(
+        book_id, "input", "source_page_texts", source_output, _sha256(source_output),
+        "application/json", {"page_count": len(source_pages), "appended_pages": len(new_page_metadata)},
+    )
+    for page in new_page_metadata:
+        image_path = store.book_directory(book_id) / "inputs" / "pages" / f"page_{page['page']:04d}.png"
+        store.add_artifact(
+            book_id, "pages", "page_image", image_path, _sha256(image_path), "image/png",
+            {"page": page["page"], "original_filename": page["filename"], "appended": True},
+        )
+
+    text_update = update_text(book_id, TextUpdate(text=f"\n\n{store.PAGE_BREAK_TOKEN}\n\n".join(current_text_pages + normalized_new_pages)))
+    store.add_event(book_id, "pages", "image_pages_appended", "user", f"Appended {len(new_page_metadata)} pages; total {len(existing_pages)}")
+    return {
+        "id": book_id,
+        "title": book["title"],
+        "page_count": len(existing_pages),
+        "appended_page_count": len(new_page_metadata),
+        "status": store.get_book(book_id)["status"],
+        "text_update": text_update,
+    }
+
+
+@app.post("/api/books/images", status_code=201)
+async def create_image_book(
+    images: list[UploadFile] = File(...),
+    page_texts: str = Form(...),
+    title: str = Form(default=""),
+) -> dict:
+    submitted_texts = _parse_image_page_texts(images, page_texts)
+    book = create_image_book_draft(title)
+    page_metadata = await _save_image_pages(book["id"], images, submitted_texts)
+    source_text_path = store.book_directory(book["id"]) / "inputs" / "page_texts.json"
+    source_text_path.write_text(json.dumps(page_metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    store.add_artifact(
+        book["id"], "input", "source_page_texts", source_text_path, _sha256(source_text_path),
+        "application/json", {"page_count": len(page_metadata)},
+    )
+    job = _enqueue_job(book["id"], "document", "service.worker.prepare_image_book")
+    return {**book, "page_count": len(page_metadata), "status": job["status"], "job": job}
+
+
 @app.post("/api/books/{book_id}/prepare-document")
 def prepare_document_again(book_id: str) -> dict:
     book = store.get_book(book_id)
@@ -139,7 +380,12 @@ def prepare_document_again(book_id: str) -> dict:
         raise HTTPException(status_code=404, detail="Book not found")
     if book["current_stage"] != "document" or book["status"] not in {"queue_unavailable", "failed"}:
         raise HTTPException(status_code=409, detail="Document preparation is not waiting for a retry")
-    return _enqueue_document_job(book_id)
+    is_image_book = any(
+        item["stage"] == "input" and item["kind"] == "source_page_texts"
+        for item in book["artifacts"]
+    )
+    task_name = "service.worker.prepare_image_book" if is_image_book else "service.worker.prepare_document"
+    return _enqueue_job(book_id, "document", task_name)
 
 
 @app.post("/api/books/{book_id}/reference")

@@ -301,7 +301,10 @@ def _render_video(job_id: str, preview: bool) -> str:
     output_dir = store.book_directory(book_id) / "artifacts" / job["stage"] / job_id
     timings_path = output_dir / "page_timings.json"
     video_path = output_dir / ("preview.mp4" if preview else "reading.mp4")
-    pdf_path = _artifact_path(_latest_artifact(book, "pages", "rendered_pdf"))
+    pdf_artifacts = [
+        item for item in book["artifacts"]
+        if item["stage"] == "pages" and item["kind"] == "rendered_pdf" and not item.get("stale")
+    ]
     video_python = os.environ.get("READING_VIDEO_PYTHON", sys.executable)
     images_dir = output_dir / "pages"
     images_dir.mkdir(parents=True, exist_ok=True)
@@ -322,12 +325,15 @@ def _render_video(job_id: str, preview: bool) -> str:
         artifact = latest_page_images[page_number]
         image_path = _artifact_path(artifact)
         shutil.copy2(image_path, images_dir / f"page_{page_number:04d}.png")
+    timing_command = [
+        video_python, str(ROOT / "src/page_timings.py"),
+        "--pages-json", str(audio_root / "book_pages.json"),
+        "--chunks-dir", str(audio_root / "f5/chunks"), "--output", str(timings_path),
+    ]
+    if pdf_artifacts:
+        timing_command += ["--pdf", str(_artifact_path(max(pdf_artifacts, key=lambda item: item["version"]))) ]
     commands = [
-        [
-            video_python, str(ROOT / "src/page_timings.py"), "--pdf", str(pdf_path),
-            "--pages-json", str(audio_root / "book_pages.json"),
-            "--chunks-dir", str(audio_root / "f5/chunks"), "--output", str(timings_path),
-        ],
+        timing_command,
         [
             video_python, str(ROOT / "src/book_video.py"), "--audio", str(audio_path),
             "--images-dir", str(images_dir), "--timings", str(timings_path),
@@ -419,6 +425,55 @@ def prepare_document(job_id: str) -> str:
     except Exception as exc:
         if not log_path.exists():
             log_path.write_text(str(exc), encoding="utf-8")
+        store.add_artifact(book_id, "document", "log", log_path, _sha256(log_path), "text/plain; charset=utf-8", {"job_id": job_id})
+        store.add_event(book_id, "document", "failed", note=str(exc))
+        store.set_book_state(book_id, "document", "failed")
+        store.update_job(job_id, "failed", error=str(exc))
+        raise
+
+
+def prepare_image_book(job_id: str) -> str:
+    job = store.get_job(job_id)
+    if job is None:
+        raise ValueError(f"Unknown image book preparation job: {job_id}")
+    book_id = job["book_id"]
+    book = store.get_book(book_id)
+    if book is None:
+        raise ValueError(f"Unknown book: {book_id}")
+
+    output_dir = store.book_directory(book_id) / "artifacts" / "document" / job_id
+    images_dir = store.book_directory(book_id) / "inputs" / "pages"
+    page_texts = _artifact_path(_latest_artifact(book, "input", "source_page_texts"))
+    text_path = output_dir / "book.txt"
+    pages_path = output_dir / "book_pages.json"
+    checklist_path = output_dir / "book_checklist.json"
+    log_path = output_dir / "prepare.log"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    store.update_job(job_id, "running", progress=0.1)
+    store.set_book_state(book_id, "document", "preparing")
+    try:
+        from src.prepare_image_book import prepare_image_book as build_image_book
+
+        page_records = build_image_book(images_dir, page_texts, output_dir, text_path, pages_path)
+        store.update_job(job_id, "running", progress=0.8)
+        metadata = {"job_id": job_id, "source": "user_images"}
+        store.add_artifact(book_id, "pages", "page_metadata", pages_path, _sha256(pages_path), "application/json", metadata)
+        store.add_artifact(book_id, "pages", "checklist", checklist_path, _sha256(checklist_path), "application/json", metadata)
+        store.add_artifact(book_id, "text", "normalized_text", text_path, _sha256(text_path), "text/plain; charset=utf-8", metadata)
+        for page_number, page in enumerate(page_records, 1):
+            image_path = output_dir / "pages" / f"page_{page_number:04d}.png"
+            store.add_artifact(
+                book_id, "pages", "page_image", image_path, _sha256(image_path), "image/png",
+                {**metadata, "page": page_number, "original_filename": page["source_image"]},
+            )
+        log_path.write_text(f"Prepared {len(page_records)} user-provided image/text pages\n", encoding="utf-8")
+        store.add_artifact(book_id, "document", "log", log_path, _sha256(log_path), "text/plain; charset=utf-8", metadata)
+        store.add_event(book_id, "pages", "prepared", note=f"Prepared {len(page_records)} user-provided image/text pages")
+        store.set_book_state(book_id, "pages_review", "awaiting_page_review")
+        store.update_job(job_id, "completed", progress=1)
+        return f"Prepared image pages for book {book_id}"
+    except Exception as exc:
+        log_path.write_text(str(exc), encoding="utf-8")
         store.add_artifact(book_id, "document", "log", log_path, _sha256(log_path), "text/plain; charset=utf-8", {"job_id": job_id})
         store.add_event(book_id, "document", "failed", note=str(exc))
         store.set_book_state(book_id, "document", "failed")

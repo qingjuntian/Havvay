@@ -1,6 +1,6 @@
 # Reading Studio Service
 
-The service workflow covers laid-out PDF upload and preparation, page/text review, reference-audio preprocessing and review, first-five-page audio/video preview, and full audiobook/video generation. Validate each stage on AutoDL before treating the service as production-ready.
+The service workflow covers two book sources: a laid-out PDF, or user-provided images with one matching text per image. Both sources enter the same page/text review, reference-audio preprocessing and review, first-five-page audio/video preview, and full audiobook/video workflow. Validate each stage on AutoDL before treating the service as production-ready.
 
 ## AutoDL Setup
 
@@ -94,6 +94,8 @@ Logs and PID files are stored in `$READING_SERVICE_HOME/logs` and `$READING_SERV
 ## Current Scope
 
 - Upload a Word/WPS-exported `.pdf`; the worker renders page PNGs and extracts page-level raw/normalized text from that same PDF, plus a checklist. TTS page breaks move to the nearest sentence/clause ending so F5 does not restart mid-sentence; some spoken text can therefore be assigned to an adjacent PDF page for timing. DOCX upload is not supported because server-side reflow cannot guarantee Word pagination or fonts.
+- Alternatively, create an image book from the left sidebar, then add PNG/JPEG/WebP images and one non-empty TTS text per image in that book's right-side workspace. The browser sorts filenames numerically; image/text page mapping is kept exactly as submitted, so each page text should preferably end at a complete sentence. Images are normalized to PNG and the source text is retained for the book's history.
+- Image books can receive more pages later from the `＋ 添加页面` control above the page preview, including after previous review approvals. The text is appended without rewriting existing reviewed content; previously generated audio/video is invalidated, and existing audio triggers the normal changed-chunk update flow.
 - Review page images and normalized text, provide the exact voice transcript, and approve each audio/video stage. TTS text remains editable whenever the book has no active job.
 - If audio already exists, saving edited TTS text automatically queues a preview/full audio update. Existing chunk WAVs are reused when their text and pause match; changed chunk positions are re-synthesized and the audiobook is rebuilt. Old audio/video artifacts remain in history but are marked stale; video must be regenerated and reviewed again.
 - TTS normalization strips quotation glyphs and Markdown bold markers while preserving the quoted words and sentence punctuation, and converts common dates, ranges, percentages, counts, ages, and centuries to Chinese spoken forms. Figure/table captions are excluded by default but are listed in review and can be added to their page's TTS text; the original PDF remains the layout reference.
@@ -101,4 +103,4 @@ Logs and PID files are stored in `$READING_SERVICE_HOME/logs` and `$READING_SERV
 - Book state, immutable artifact versions, SHA-256 values, jobs, and approval events are stored in SQLite.
 - Redis/RQ runs background jobs. Run exactly one `rq worker reading` process to keep GPU inference sequential.
 
-Image rendering requires PyMuPDF, and PDF text extraction requires `pypdf`. The uploaded PDF is the layout authority; text extraction quality may vary for scanned PDFs or PDFs with unusual text encoding, and the review screen allows manual correction.
+PDF image rendering requires PyMuPDF, PDF text extraction requires `pypdf`, and image uploads require Pillow. The uploaded PDF is the layout authority; text extraction quality may vary for scanned PDFs or PDFs with unusual text encoding, and the review screen allows manual correction.

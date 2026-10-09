@@ -8,7 +8,6 @@ import re
 from difflib import SequenceMatcher
 from pathlib import Path
 
-from moviepy import AudioFileClip
 from pypdf import PdfReader
 
 try:
@@ -21,10 +20,12 @@ def normalize(value: str) -> str:
     return match_text(value)
 
 
-def page_texts(pdf_path: Path, pages_json: Path | None = None) -> list[str]:
+def page_texts(pdf_path: Path | None, pages_json: Path | None = None) -> list[str]:
     if pages_json:
         data = json.loads(pages_json.read_text(encoding="utf-8"))
         return [page["match_text"] for page in data["pages"]]
+    if pdf_path is None:
+        raise ValueError("A PDF path is required when page metadata JSON is not provided")
     pages = []
     for page_number, page in enumerate(PdfReader(str(pdf_path)).pages, 1):
         text = normalize(page.extract_text() or "")
@@ -34,6 +35,8 @@ def page_texts(pdf_path: Path, pages_json: Path | None = None) -> list[str]:
 
 
 def chunk_data(chunks_dir: Path) -> tuple[list[dict], str]:
+    from moviepy import AudioFileClip
+
     items = []
     position = 0
     for text_path in sorted(chunks_dir.glob("chunk_*.txt")):
@@ -57,6 +60,14 @@ def chunk_data(chunks_dir: Path) -> tuple[list[dict], str]:
 
 
 def locate_page_starts(pages: list[str], joined: str) -> list[int]:
+    if "".join(pages) == joined:
+        starts = []
+        position = 0
+        for page in pages:
+            starts.append(position)
+            position += len(page)
+        return starts
+
     starts = [0]
     previous = 0
     for page_number, page in enumerate(pages[1:], 2):
@@ -72,7 +83,7 @@ def locate_page_starts(pages: list[str], joined: str) -> list[int]:
             blocks = SequenceMatcher(None, page[:300], joined[previous:], autojunk=False).get_matching_blocks()
             candidates = [block for block in blocks if block.size >= 15]
             if not candidates:
-                raise ValueError(f"Could not locate the start of PDF page {page_number} in chunk text")
+                raise ValueError(f"Could not locate the start of page {page_number} in chunk text")
             block = max(candidates, key=lambda value: (value.size, -value.b))
             start = previous + block.b
         if start < previous:
@@ -82,7 +93,9 @@ def locate_page_starts(pages: list[str], joined: str) -> list[int]:
     return starts
 
 
-def build_timings(pdf_path: Path, chunks_dir: Path, pages_json: Path | None = None) -> dict:
+def build_timings(pdf_path: Path | None, chunks_dir: Path, pages_json: Path | None = None) -> dict:
+    if pages_json is None and pdf_path is None:
+        raise ValueError("Provide either a PDF or page metadata JSON")
     pages = page_texts(pdf_path, pages_json)
     chunks, joined = chunk_data(chunks_dir)
     if not pages:
@@ -121,17 +134,22 @@ def build_timings(pdf_path: Path, chunks_dir: Path, pages_json: Path | None = No
             "chunks": assigned,
         })
     total = sum(item["duration"] for item in page_items)
-    return {"pdf": str(pdf_path), "chunks_dir": str(chunks_dir), "pages": page_items, "total_duration": round(total, 6)}
+    return {
+        "pdf": str(pdf_path) if pdf_path else None,
+        "chunks_dir": str(chunks_dir),
+        "pages": page_items,
+        "total_duration": round(total, 6),
+    }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Create page timing data from a PDF and chunk WAV files.")
-    parser.add_argument("--pdf", required=True)
+    parser.add_argument("--pdf")
     parser.add_argument("--chunks-dir", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--pages-json", default=None, help="Normalized page JSON from prepare_book.py")
     args = parser.parse_args()
-    result = build_timings(Path(args.pdf), Path(args.chunks_dir), Path(args.pages_json) if args.pages_json else None)
+    result = build_timings(Path(args.pdf) if args.pdf else None, Path(args.chunks_dir), Path(args.pages_json) if args.pages_json else None)
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")

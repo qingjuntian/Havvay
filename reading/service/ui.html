@@ -48,6 +48,11 @@
     .upload-box h2 { margin: 0 0 12px; font-size: 14px; }
     .upload-box input[type=file] { width: 100%; font-size: 12px; color: var(--muted); }
     .upload-box input[type=text] { width: 100%; height: 38px; margin: 11px 0; padding: 0 10px; border: 1px solid var(--line); border-radius: 4px; }
+    .upload-mode { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 12px; padding: 3px; background: #e9ece6; border-radius: 4px; }
+    .upload-mode button { min-height: 34px; border: 0; border-radius: 3px; background: transparent; color: var(--muted); font-size: 11px; }
+    .upload-mode button[aria-pressed="true"] { background: var(--surface); color: var(--green); box-shadow: 0 1px 3px rgb(31 54 43 / 12%); }
+    .upload-fields[hidden] { display: none; }
+    .upload-hint { margin: 8px 0; color: var(--muted); font-size: 11px; }
     .primary, .secondary { border: 0; border-radius: 4px; min-height: 38px; padding: 0 13px; }
     .primary { background: var(--green); color: white; }
     .primary:hover { background: #174835; }
@@ -78,6 +83,14 @@
     .section-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 11px; }
     .section-head h2 { margin: 0; font-size: 16px; }
     .section-head small { color: var(--muted); }
+    .image-page-composer { max-width: 920px; padding: 16px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); }
+    .image-page-composer > p { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
+    .image-page-composer input[type=file] { max-width: 100%; }
+    .image-page-composer .image-page-inputs { display: grid; gap: 12px; margin: 14px 0; }
+    .image-page-input { display: grid; grid-template-columns: minmax(90px, 160px) minmax(0, 1fr); gap: 14px; align-items: start; padding: 10px; border: 1px solid var(--line); border-radius: 3px; background: #fff; }
+    .image-page-input img { width: 100%; height: 160px; object-fit: contain; background: #e9e6dc; }
+    .image-page-input label { display: block; margin-bottom: 6px; overflow-wrap: anywhere; color: var(--muted); font-size: 12px; }
+    .image-page-input textarea { min-height: 125px; padding: 10px; font: 14px/1.7 "Avenir Next", "PingFang SC", sans-serif; }
     .page-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 13px; }
     .page-item { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 8px; box-shadow: var(--shadow); }
     .page-zoom { display: block; width: 100%; padding: 0; border: 0; background: transparent; }
@@ -136,9 +149,18 @@
       <div class="brand"><span class="brand-mark" aria-hidden="true"></span><div><strong>Reading Studio</strong><small>BOOK PRODUCTION</small></div></div>
       <form class="upload-box" id="upload-form">
         <h2>新建书籍</h2>
-        <input type="file" name="pdf" accept="application/pdf,.pdf" required aria-label="选择排版好的 PDF">
+        <div class="upload-mode" role="group" aria-label="书籍内容来源">
+          <button type="button" data-upload-mode="pdf" aria-pressed="true">排版 PDF</button>
+          <button type="button" data-upload-mode="images" aria-pressed="false">图片 + 文本</button>
+        </div>
+        <div id="pdf-upload-fields" class="upload-fields">
+          <input type="file" name="pdf" accept="application/pdf,.pdf" required aria-label="选择排版好的 PDF">
+        </div>
+        <div id="image-upload-fields" class="upload-fields" hidden>
+          <p class="upload-hint">先创建书籍，再从右侧工作区添加图片和对应文本。</p>
+        </div>
         <input type="text" name="title" placeholder="书名（可选）" aria-label="书名">
-        <button class="primary" type="submit">上传 PDF 并开始处理</button>
+        <button class="primary" id="upload-submit" type="submit">上传 PDF 并开始处理</button>
         <div id="message" role="status"></div>
       </form>
       <nav class="book-nav" aria-label="书籍列表">
@@ -147,7 +169,7 @@
       </nav>
     </aside>
     <main id="main">
-      <div class="empty"><div class="empty-mark" aria-hidden="true"></div><h1>选择一本书开始审核</h1><p>上传 Word 或 WPS 导出的排版 PDF 后，这里会显示页面与待确认文本。</p></div>
+      <div class="empty"><div class="empty-mark" aria-hidden="true"></div><h1>选择一本书开始审核</h1><p>上传排版 PDF，或选择图片并填写每页文本。</p></div>
     </main>
   </div>
   <dialog class="page-viewer" id="page-viewer" aria-label="页面图片放大查看">
@@ -170,8 +192,12 @@
     const pageViewerLabel = document.querySelector("#page-viewer-label");
     const pageViewerPrevious = document.querySelector("#page-viewer-prev");
     const pageViewerNext = document.querySelector("#page-viewer-next");
+    const pdfUploadFields = document.querySelector("#pdf-upload-fields");
+    const imageUploadFields = document.querySelector("#image-upload-fields");
+    const uploadSubmit = document.querySelector("#upload-submit");
     let activeBookId = null;
     let activeStatus = "";
+    let uploadMode = "pdf";
     let viewerPages = [];
     let viewerPageIndex = 0;
 
@@ -211,6 +237,19 @@
       } else if (event.key === "End") {
         showViewerPage(viewerPages.length - 1);
       }
+    });
+
+    document.querySelectorAll("[data-upload-mode]").forEach(button => {
+      button.addEventListener("click", () => {
+        uploadMode = button.dataset.uploadMode;
+        document.querySelectorAll("[data-upload-mode]").forEach(item => {
+          item.setAttribute("aria-pressed", String(item === button));
+        });
+        pdfUploadFields.hidden = uploadMode !== "pdf";
+        imageUploadFields.hidden = uploadMode !== "images";
+        document.querySelector('input[name="pdf"]').required = uploadMode === "pdf";
+        uploadSubmit.textContent = uploadMode === "pdf" ? "上传 PDF 并开始处理" : "创建图片书籍";
+      });
     });
 
     async function api(url, options = {}) {
@@ -271,7 +310,7 @@
           empty.append(
             element("div", "empty-mark"),
             element("h1", "", "选择一本书开始审核"),
-            element("p", "", "上传 Word 或 WPS 导出的排版 PDF 后，这里会显示页面与待确认文本。"),
+            element("p", "", "上传排版 PDF，或选择图片并填写每页文本。"),
           );
           mainNode.append(empty);
         }
@@ -307,6 +346,71 @@
       section.append(head);
       parent.append(section);
       return section;
+    }
+
+    function createImagePageComposer(bookId, submitLabel, onComplete) {
+      const panel = element("div", "image-page-composer");
+      panel.append(element("p", "", "选择图片后，为每一张填写对应文本。图片按文件名中的数字排序；建议每段以完整句结束。"));
+      const fileInput = document.createElement("input");
+      fileInput.type = "file";
+      fileInput.accept = "image/png,image/jpeg,image/webp";
+      fileInput.multiple = true;
+      fileInput.setAttribute("aria-label", "选择图片页面");
+      const editors = element("div", "image-page-inputs");
+      const actions = element("div", "actions");
+      const submit = element("button", "primary", submitLabel);
+      submit.type = "button";
+      const previewUrls = [];
+      let orderedFiles = [];
+      fileInput.addEventListener("change", () => {
+        previewUrls.forEach(url => URL.revokeObjectURL(url));
+        previewUrls.length = 0;
+        const collator = new Intl.Collator("zh-CN", { numeric: true, sensitivity: "base" });
+        orderedFiles = [...fileInput.files].sort((left, right) => collator.compare(left.name, right.name));
+        editors.replaceChildren();
+        orderedFiles.forEach((file, index) => {
+          const row = element("div", "image-page-input");
+          const preview = document.createElement("img");
+          preview.src = URL.createObjectURL(file);
+          previewUrls.push(preview.src);
+          preview.alt = `第 ${index + 1} 页图片预览`;
+          const editor = element("div", "");
+          const label = element("label", "", `第 ${index + 1} 页 · ${file.name}`);
+          const textarea = document.createElement("textarea");
+          textarea.required = true;
+          textarea.placeholder = "输入这一页对应的朗读文本";
+          textarea.setAttribute("aria-label", `第 ${index + 1} 页朗读文本`);
+          editor.append(label, textarea);
+          row.append(preview, editor);
+          editors.append(row);
+        });
+      });
+      submit.addEventListener("click", async () => {
+        const pageTexts = [...editors.querySelectorAll("textarea")].map(textarea => textarea.value);
+        if (!orderedFiles.length || pageTexts.length !== orderedFiles.length || pageTexts.some(text => !text.trim())) {
+          messageNode.textContent = "请选择图片，并为每张图片填写对应文本";
+          return;
+        }
+        submit.disabled = true;
+        try {
+          const form = new FormData();
+          orderedFiles.forEach(file => form.append("images", file, file.name));
+          form.append("page_texts", JSON.stringify(pageTexts));
+          const result = await api(`/api/books/${bookId}/image-pages`, { method: "POST", body: form });
+          messageNode.textContent = result.status === "queued"
+            ? `已提交 ${result.appended_page_count ?? result.page_count} 页，正在处理`
+            : result.job?.error || "页面已提交";
+          await onComplete();
+        } catch (error) {
+          messageNode.textContent = error.message;
+          submit.disabled = false;
+        } finally {
+          previewUrls.forEach(url => URL.revokeObjectURL(url));
+        }
+      });
+      actions.append(submit);
+      panel.append(fileInput, editors, actions);
+      return panel;
     }
 
     async function openBook(bookId) {
@@ -359,9 +463,34 @@
       }
       mainNode.append(strip);
 
+      if (book.current_stage === "document" && book.status === "awaiting_image_pages") {
+        const section = addSection(mainNode, "添加图片与文本", "每张图片对应一页朗读内容");
+        const panel = createImagePageComposer(bookId, "上传页面并开始审核", () => loadBooks());
+        section.append(panel);
+        return;
+      }
+
       const images = latestPageImages(book);
+      const isImageBook = book.artifacts.some(item => item.stage === "input" && item.kind === "source_page_texts");
       if (images.length) {
         const section = addSection(mainNode, "页面预览", `${images.length} 页`);
+        if (isImageBook) {
+          const toggle = element("button", "secondary", "＋ 添加页面");
+          toggle.type = "button";
+          let composer = null;
+          toggle.addEventListener("click", () => {
+            if (composer) {
+              composer.remove();
+              composer = null;
+              toggle.textContent = "＋ 添加页面";
+              return;
+            }
+            composer = createImagePageComposer(bookId, "追加页面并更新审核", () => openBook(bookId));
+            section.insertBefore(composer, grid);
+            toggle.textContent = "取消添加";
+          });
+          section.append(toggle);
+        }
         const grid = element("div", "page-grid");
         for (const [index, artifact] of images.entries()) {
           const figure = element("figure", "page-item");
@@ -639,12 +768,28 @@
       const uploadForm = event.currentTarget;
       messageNode.textContent = "正在上传…";
       try {
-        const form = new FormData(uploadForm);
-        const result = await api("/api/books", { method: "POST", body: form });
-        messageNode.textContent = result.status === "queued" ? "已加入分页队列" : result.job.error;
-        uploadForm.reset();
-        activeBookId = result.id;
-        await loadBooks();
+        const form = new FormData();
+        form.append("title", uploadForm.elements.title.value);
+        let endpoint = "/api/books";
+        if (uploadMode === "pdf") {
+          form.append("pdf", uploadForm.elements.pdf.files[0]);
+          const result = await api(endpoint, { method: "POST", body: form });
+          messageNode.textContent = result.status === "queued" ? "已加入处理队列" : result.job.error;
+          uploadForm.reset();
+          activeBookId = result.id;
+          await loadBooks();
+        } else {
+          form.append("title", uploadForm.elements.title.value);
+          const result = await api("/api/books/image-books", {
+            method: "POST",
+            body: form,
+          });
+          messageNode.textContent = "书籍已创建，请在右侧添加图片和对应文本";
+          uploadForm.reset();
+          document.querySelector('[data-upload-mode="pdf"]').click();
+          activeBookId = result.id;
+          await loadBooks();
+        }
       } catch (error) { messageNode.textContent = error.message; }
     });
 
