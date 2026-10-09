@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from service import store
+from service.worker import changed_chunk_numbers
 
 
 class ServiceStoreTests(unittest.TestCase):
@@ -106,14 +107,14 @@ class ServiceStoreTests(unittest.TestCase):
 
     def test_delete_book_removes_its_records_and_files(self) -> None:
         book_path = store.book_directory(self.book_id)
-        source_file = book_path / "inputs" / "original.docx"
+        source_file = book_path / "inputs" / "original.pdf"
         source_file.parent.mkdir(parents=True)
-        source_file.write_bytes(b"test docx")
+        source_file.write_bytes(b"%PDF-test")
         artifact_path = book_path / "artifacts" / "preview.mp4"
         artifact_path.parent.mkdir(parents=True)
         artifact_path.write_bytes(b"test video")
         store.add_artifact(
-            self.book_id, "input", "docx", source_file, "source-hash", "application/docx"
+            self.book_id, "input", "source_pdf", source_file, "source-hash", "application/pdf"
         )
         store.add_artifact(
             self.book_id, "preview", "video", artifact_path, "video-hash", "video/mp4"
@@ -134,7 +135,7 @@ class ServiceStoreTests(unittest.TestCase):
 
     def test_delete_book_refuses_queued_or_running_jobs(self) -> None:
         book_path = store.book_directory(self.book_id)
-        source_file = book_path / "inputs" / "original.docx"
+        source_file = book_path / "inputs" / "original.pdf"
         source_file.parent.mkdir(parents=True)
         source_file.write_bytes(b"keep this file")
         store.create_job(str(uuid.uuid4()), self.book_id, "prepare_document")
@@ -144,6 +145,71 @@ class ServiceStoreTests(unittest.TestCase):
         self.assertEqual(result, "active_jobs")
         self.assertTrue(source_file.is_file())
         self.assertIsNotNone(store.get_book(self.book_id))
+
+    def test_image_change_invalidates_videos_but_preserves_audio(self) -> None:
+        artifact_dir = store.book_directory(self.book_id) / "artifacts"
+        artifact_dir.mkdir(parents=True)
+        artifacts = [
+            ("preview_audio_review", "audiobook_mp3", "preview.mp3"),
+            ("preview_video_review", "video_mp4", "preview.mp4"),
+            ("preview_video_review", "page_timings", "preview.json"),
+            ("final_audio_review", "audiobook_mp3", "final.mp3"),
+            ("final_video_review", "video_mp4", "final.mp4"),
+        ]
+        for stage, kind, filename in artifacts:
+            path = artifact_dir / filename
+            path.write_bytes(b"artifact")
+            store.add_artifact(self.book_id, stage, kind, path, filename, "application/octet-stream")
+
+        invalidated = store.invalidate_video_artifacts(self.book_id, "Page image replaced")
+        book = store.get_book(self.book_id)
+        assert book is not None
+        by_kind = {(item["stage"], item["kind"]): item for item in book["artifacts"]}
+
+        self.assertEqual(invalidated, 3)
+        self.assertFalse(by_kind[("preview_audio_review", "audiobook_mp3")]["stale"])
+        self.assertTrue(by_kind[("preview_video_review", "video_mp4")]["stale"])
+        self.assertTrue(by_kind[("preview_video_review", "page_timings")]["stale"])
+        self.assertFalse(by_kind[("final_audio_review", "audiobook_mp3")]["stale"])
+        self.assertTrue(by_kind[("final_video_review", "video_mp4")]["stale"])
+
+    def test_text_change_invalidates_audio_and_video_but_preserves_inputs(self) -> None:
+        artifact_dir = store.book_directory(self.book_id) / "artifacts"
+        artifact_dir.mkdir(parents=True)
+        artifacts = [
+            ("pages", "page_image", "page.png"),
+            ("reference_review", "processed_audio", "reference.wav"),
+            ("preview_audio_review", "audiobook_mp3", "preview.mp3"),
+            ("preview_audio_review", "audiobook_wav", "preview.wav"),
+            ("preview_video_review", "video_mp4", "preview.mp4"),
+            ("final_audio_review", "audiobook_mp3", "full.mp3"),
+            ("final_video_review", "video_mp4", "full.mp4"),
+        ]
+        for stage, kind, filename in artifacts:
+            path = artifact_dir / filename
+            path.write_bytes(b"artifact")
+            store.add_artifact(self.book_id, stage, kind, path, filename, "application/octet-stream")
+
+        invalidated = store.invalidate_text_dependent_artifacts(self.book_id, "Text edited")
+        book = store.get_book(self.book_id)
+        assert book is not None
+        by_kind = {(item["stage"], item["kind"]): item for item in book["artifacts"]}
+
+        self.assertEqual(invalidated, 5)
+        self.assertFalse(by_kind[("pages", "page_image")]["stale"])
+        self.assertFalse(by_kind[("reference_review", "processed_audio")]["stale"])
+        self.assertTrue(by_kind[("preview_audio_review", "audiobook_mp3")]["stale"])
+        self.assertTrue(by_kind[("preview_audio_review", "audiobook_wav")]["stale"])
+        self.assertTrue(by_kind[("preview_video_review", "video_mp4")]["stale"])
+        self.assertTrue(by_kind[("final_audio_review", "audiobook_mp3")]["stale"])
+        self.assertTrue(by_kind[("final_video_review", "video_mp4")]["stale"])
+
+    def test_changed_chunk_numbers_only_selects_changed_text_or_pause(self) -> None:
+        previous = [("unchanged", 0.3), ("edited", 0.3), ("same text", 0.3)]
+        current = [("unchanged", 0.3), ("edited version", 0.3), ("same text", 0.6), ("new", 0.3)]
+
+        self.assertEqual(changed_chunk_numbers(previous, current), [2, 3, 4])
+        self.assertEqual(changed_chunk_numbers(previous[:1], previous[:1]), [])
 
 
 if __name__ == "__main__":

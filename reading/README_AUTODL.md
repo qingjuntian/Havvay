@@ -1,14 +1,14 @@
 # AutoDL 部署说明
 
-本项目把用户提供的 PDF、逐页图片和声音样本，转换成带配音和翻页效果的竖版 MP4。
+本项目以用户已经排版的 Word 文档和声音样本为输入，自动固定分页、导出每页图片和文本，再生成配音及翻页效果的竖版 MP4。也兼容已有 PDF 和页面图片的输入方式。
 
 完整流程：
 
 ```text
-PDF + page images + voice sample + REF_TEXT
+Formatted DOCX + voice sample + REF_TEXT
         |
         v
-PDF 提取/文本归一化
+Word/WPS-exported PDF -> page images + per-page text
         |
         v
 参考音频去首尾静音
@@ -64,7 +64,7 @@ python -m pip install -r requirements-video.txt
 检查：
 
 ```bash
-python -c "import moviepy, PIL, pypdf, numpy; print('video environment: ok')"
+python -c "import moviepy, PIL, pypdf, fitz, numpy; print('video environment: ok')"
 ```
 
 ### F5-TTS GPU 环境
@@ -118,28 +118,35 @@ cuda: True
 
 ## 3. 输入文件
 
-一键流程需要四项输入：
+推荐的 PDF 流程只需要三项输入：
 
 ```text
-book.pdf                 书籍 PDF
-page-images/             每页一张 PNG 图片
+book.pdf                 从 Word/WPS 导出的最终排版 PDF
 voice.wav 或 voice.mp3   声音样本
 REF_TEXT                 声音样本的准确文字转写
 ```
 
-例如：
+如果已有 TXT 赏析和一一对应的页面图片，则提供 TXT、图片目录、声音样本和准确 `REF_TEXT` 即可，不需要 DOCX/PDF：
 
-```text
-data/book.pdf
-data/pages/page_01.png
-data/pages/page_02.png
-...
-data/voice.wav
+```bash
+python src/build_book_video.py \
+  --text data/zikai/shangxi.txt \
+  --images-dir data/zikai/images \
+  --voice data/zikai/voice.mp3 \
+  --ref-text "这里填写 voice.mp3 实际说出的准确文字" \
+  --f5-python /root/miniconda3/envs/f5/bin/python \
+  --speed 1.2 \
+  --work-dir output/zikai_build \
+  --output output/zikai.mp4
 ```
+
+TXT 中每个作品需以独立的 `作品名称：...` 行开始；程序按该标题分段，并将图片按文件名中的数字顺序配对。TXT 段数必须与图片数量相同。
+
+脚本会从同一个 Word/WPS 导出 PDF 同步提取每页文本和 PNG 页面图。AutoDL 不会重新排版，因此页面与字体以该 PDF 为准。
 
 要求：
 
-- PDF 页数必须等于 PNG 数量
+- PDF 页数自动决定 PNG 数量，页面图与文本都来自同一个 PDF
 - 图片按数字顺序命名，例如 `page_01.png`、`page_02.png`
 - 声音样本建议包含一段连续、清晰的中文语音
 - `REF_TEXT` 必须逐字匹配声音样本实际说出的内容
@@ -153,16 +160,26 @@ data/voice.wav
 source .venv-video/bin/activate
 ```
 
-运行：
+运行 PDF 一键流程：
 
 ```bash
 python src/build_book_video.py \
   --pdf data/book.pdf \
-  --images-dir data/pages \
+  --voice data/voice.wav \
+  --ref-text "这里填写声音样本实际说出的完整文字" \
+  --f5-python /root/miniconda3/envs/f5/bin/python \
+  --speed 1.2 \
+  --output output/book.mp4
+```
+
+如果已有 PDF，仍使用同一流程；页面图片会从 PDF 自动生成：
+
+```bash
+python src/build_book_video.py \
+  --pdf data/book.pdf \
   --voice data/voice.wav \
   --ref-text "这里填写声音样本实际说出的完整文字" \
   --f5-python .venv-f5/bin/python \
-  --speed 1.2 \
   --output output/book.mp4
 ```
 
@@ -199,7 +216,9 @@ output/book.mp4
 
 ```text
 output/book_build/
-├── book.txt                       # PDF 提取并归一化后的全文
+├── rendered/book.pdf              # 上传的权威排版 PDF 副本
+├── pages/page_0001.png            # 与逐页文本一一对应的页面图片
+├── book.txt                       # 带页边界标记的 TTS 全文
 ├── book_pages.json                # 逐页文本和匹配文本
 ├── book_checklist.json            # 疑似图表/表格人工检查清单
 ├── reference/
@@ -211,7 +230,9 @@ output/book_build/
 │   │   ├── chunk_00001.wav
 │   │   └── ...
 │   └── audiobook.mp3
-└── page_timings.json              # 页面到音频时间的映射
+└── page_timings.json              # 页面到 chunk/WAV 时长的映射
+
+每页文本通过内部页标记与下一页隔开，F5 chunk 不跨页。普通页尾不额外插入停顿；页尾标题仍保留标题停顿。时间轴逐页累加完整 chunk WAV 时长，不按字符比例估算，并验证页面边界落在 chunk 边界上。
 ```
 
 如果希望使用其他工作目录：
@@ -226,8 +247,7 @@ output/book_build/
 
 | 参数 | 默认值 | 说明 |
 |---|---:|---|
-| `--pdf` | 必填 | 输入 PDF |
-| `--images-dir` | 必填 | PNG 页面目录 |
+| `--pdf` | 必填 | Word/WPS 导出的最终排版 PDF；自动生成页面图片 |
 | `--voice` | 必填 | 原始声音样本 |
 | `--ref-text` | 必填 | 声音样本准确转写 |
 | `--f5-python` | 当前 Python | F5-TTS 环境的 Python |

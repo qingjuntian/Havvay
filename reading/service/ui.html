@@ -84,6 +84,9 @@
     .page-zoom:focus-visible { outline: 3px solid var(--gold); outline-offset: 3px; }
     .page-item img { display: block; width: 100%; height: 225px; object-fit: contain; background: #e9e6dc; }
     .page-item figcaption { color: var(--muted); padding: 7px 1px 1px; font-size: 11px; }
+    .page-item-footer { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+    .page-replace { flex: 0 0 auto; padding: 4px 7px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface); color: var(--green); font-size: 11px; }
+    .page-replace:hover { background: var(--green-soft); }
     .page-viewer { width: min(96vw, 1280px); height: min(94vh, 1100px); max-width: none; max-height: none; padding: 14px; border: 1px solid #48524b; border-radius: 5px; background: #202823; color: #fffefa; }
     .page-viewer::backdrop { background: rgb(12 17 14 / 82%); }
     .page-viewer[open] { display: flex; flex-direction: column; }
@@ -95,6 +98,13 @@
     .viewer-actions button:disabled { opacity: 0.45; cursor: default; }
     .page-viewer-image { display: block; min-height: 0; width: 100%; height: 100%; object-fit: contain; background: #171d19; }
     .text-panel { background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 12px; }
+    .checklist-panel { margin-top: 12px; padding: 11px; border-left: 3px solid var(--gold); background: #f7f4e8; }
+    .checklist-panel > p { margin: 0 0 8px; font-size: 12px; }
+    .checklist-list { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+    .checklist-item { display: flex; align-items: start; justify-content: space-between; gap: 10px; }
+    .checklist-item span { min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
+    .checklist-item button { flex: 0 0 auto; padding: 3px 7px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface); color: var(--green); font-size: 11px; }
+    .checklist-item button:disabled { opacity: 0.55; cursor: default; }
     textarea { display: block; width: 100%; min-height: 280px; resize: vertical; border: 1px solid var(--line); border-radius: 3px; padding: 12px; color: var(--ink); background: #fff; font: 13px/1.8 "SFMono-Regular", Consolas, monospace; }
     .actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 10px; }
     .events { border-left: 2px solid var(--line); margin: 8px 0 0 5px; padding: 1px 0 1px 16px; display: grid; gap: 11px; }
@@ -126,9 +136,9 @@
       <div class="brand"><span class="brand-mark" aria-hidden="true"></span><div><strong>Reading Studio</strong><small>BOOK PRODUCTION</small></div></div>
       <form class="upload-box" id="upload-form">
         <h2>新建书籍</h2>
-        <input type="file" name="docx" accept=".docx" required aria-label="选择 Word 文档">
+        <input type="file" name="pdf" accept="application/pdf,.pdf" required aria-label="选择排版好的 PDF">
         <input type="text" name="title" placeholder="书名（可选）" aria-label="书名">
-        <button class="primary" type="submit">上传并开始分页</button>
+        <button class="primary" type="submit">上传 PDF 并开始处理</button>
         <div id="message" role="status"></div>
       </form>
       <nav class="book-nav" aria-label="书籍列表">
@@ -137,7 +147,7 @@
       </nav>
     </aside>
     <main id="main">
-      <div class="empty"><div class="empty-mark" aria-hidden="true"></div><h1>选择一本书开始审核</h1><p>上传 DOCX 后，这里会显示分页结果与待确认文本。</p></div>
+      <div class="empty"><div class="empty-mark" aria-hidden="true"></div><h1>选择一本书开始审核</h1><p>上传 Word 或 WPS 导出的排版 PDF 后，这里会显示页面与待确认文本。</p></div>
     </main>
   </div>
   <dialog class="page-viewer" id="page-viewer" aria-label="页面图片放大查看">
@@ -261,7 +271,7 @@
           empty.append(
             element("div", "empty-mark"),
             element("h1", "", "选择一本书开始审核"),
-            element("p", "", "上传 DOCX 后，这里会显示分页结果与待确认文本。"),
+            element("p", "", "上传 Word 或 WPS 导出的排版 PDF 后，这里会显示页面与待确认文本。"),
           );
           mainNode.append(empty);
         }
@@ -274,8 +284,19 @@
 
     function latestArtifact(book, stage, kind) {
       return book.artifacts
-        .filter(item => item.stage === stage && item.kind === kind)
+        .filter(item => item.stage === stage && item.kind === kind && !item.stale)
         .sort((a, b) => b.version - a.version)[0];
+    }
+
+    function latestPageImages(book) {
+      const pages = new Map();
+      for (const artifact of book.artifacts) {
+        if (artifact.stage !== "pages" || artifact.kind !== "page_image" || artifact.stale) continue;
+        const pageNumber = artifact.metadata.page;
+        const current = pages.get(pageNumber);
+        if (!current || artifact.version > current.version) pages.set(pageNumber, artifact);
+      }
+      return [...pages.values()].sort((left, right) => left.metadata.page - right.metadata.page);
     }
 
     function addSection(parent, title, detail) {
@@ -329,8 +350,8 @@
       const stageFor = {
         pages: ["pages_review"], text: ["text_review"],
         reference: ["reference", "reference_preparation", "reference_review"],
-        preview: ["preview_audio", "preview_audio_review", "preview_video", "preview_video_review"],
-        final: ["full_audio", "final_audio_review", "full_video", "final_video_review", "complete"],
+        preview: ["preview_audio", "preview_audio_update", "preview_audio_review", "preview_video", "preview_video_review"],
+        final: ["full_audio", "full_audio_update", "final_audio_review", "full_video", "final_video_review", "complete"],
       };
       const currentIndex = Math.max(0, stageNames.findIndex(name => stageFor[name].includes(book.current_stage)));
       for (const [index, label] of ["页面", "文本", "参考声音", "五页预览", "全书成品"].entries()) {
@@ -338,7 +359,7 @@
       }
       mainNode.append(strip);
 
-      const images = book.artifacts.filter(item => item.kind === "page_image").sort((a, b) => a.metadata.page - b.metadata.page);
+      const images = latestPageImages(book);
       if (images.length) {
         const section = addSection(mainNode, "页面预览", `${images.length} 页`);
         const grid = element("div", "page-grid");
@@ -353,7 +374,45 @@
           zoomButton.setAttribute("aria-label", `放大查看第 ${artifact.metadata.page} 页`);
           zoomButton.addEventListener("click", () => openPageViewer(images, index));
           zoomButton.append(image);
-          figure.append(zoomButton, element("figcaption", "", `第 ${artifact.metadata.page} 页 · 点击放大`));
+          const footer = element("div", "page-item-footer");
+          footer.append(element("figcaption", "", `第 ${artifact.metadata.page} 页 · 点击放大`));
+          const replaceButton = element("button", "page-replace", "替换图片");
+          replaceButton.type = "button";
+          replaceButton.addEventListener("click", () => fileInput.click());
+          const fileInput = document.createElement("input");
+          fileInput.type = "file";
+          fileInput.accept = "image/png,image/jpeg,image/webp";
+          fileInput.hidden = true;
+          fileInput.setAttribute("aria-label", `选择第 ${artifact.metadata.page} 页的替换图片`);
+          fileInput.addEventListener("change", async () => {
+            const replacement = fileInput.files?.[0];
+            if (!replacement) return;
+            const confirmed = window.confirm(
+              `用“${replacement.name}”替换第 ${artifact.metadata.page} 页图片吗？\n\n已生成的视频预览会标记为过期；已有 F5 音频会保留。`,
+            );
+            if (!confirmed) {
+              fileInput.value = "";
+              return;
+            }
+            replaceButton.disabled = true;
+            try {
+              const form = new FormData();
+              form.append("image", replacement);
+              const result = await api(
+                `/api/books/${bookId}/pages/${artifact.metadata.page}/image`,
+                { method: "POST", body: form },
+              );
+              messageNode.textContent = `第 ${artifact.metadata.page} 页已替换；${result.invalidated_video_artifacts} 个旧视频产物已标记过期`;
+              await loadBooks();
+            } catch (error) {
+              messageNode.textContent = error.message;
+            } finally {
+              replaceButton.disabled = false;
+              fileInput.value = "";
+            }
+          });
+          footer.append(replaceButton);
+          figure.append(zoomButton, footer, fileInput);
           grid.append(figure);
         }
         section.append(grid);
@@ -369,27 +428,78 @@
 
       const textArtifact = latestArtifact(book, "text", "normalized_text");
       if (textArtifact) {
-        const section = addSection(mainNode, "TTS 文本", "可在确认前修订数字读法或提取错误");
+        const hasAudioHistory = book.artifacts.some(item =>
+          item.kind === "audiobook_mp3" &&
+          ["preview_audio_review", "final_audio_review"].includes(item.stage),
+        );
+        const hasActiveJob = book.jobs.some(job => ["queued", "running"].includes(job.status));
+        const sectionDetail = hasActiveJob
+          ? "处理任务运行时暂不能编辑"
+          : hasAudioHistory
+            ? "保存后自动更新受影响的 F5 音频 chunks；旧视频会标记过期"
+            : "朗读页界已按邻近句末调整，避免跨页断句；页面数量和分页标记需保持不变";
+        const section = addSection(mainNode, "TTS 文本", sectionDetail);
         const panel = element("div", "text-panel");
         const textarea = document.createElement("textarea");
         textarea.setAttribute("aria-label", "归一化后的书籍文本");
         textarea.value = await (await fetch(textArtifact.url)).text();
-        const textEditable = book.current_stage === "text_review" && book.status === "awaiting_text_review";
-        textarea.readOnly = !textEditable;
+        textarea.readOnly = hasActiveJob;
         panel.append(textarea);
+        const checklistArtifact = latestArtifact(book, "pages", "checklist");
+        if (checklistArtifact) {
+          const checklist = await (await fetch(checklistArtifact.url)).json();
+          if (checklist.items?.length) {
+            const reviewPanel = element("div", "checklist-panel");
+            reviewPanel.append(element("p", "", "这些图表标题未自动加入朗读文本；需要朗读的项目可加入对应页面。"));
+            const list = element("ul", "checklist-list");
+            for (const item of checklist.items) {
+              const row = element("li", "checklist-item");
+              row.append(element("span", "", `第 ${item.page} 页 · ${item.text}`));
+              const includeButton = element("button", "", "加入文本");
+              includeButton.type = "button";
+              includeButton.disabled = hasActiveJob;
+              includeButton.addEventListener("click", () => {
+                const pageSections = textarea.value.split("<<<BOOK_PAGE_BREAK>>>");
+                const pageIndex = item.page - 1;
+                if (pageIndex < 0 || pageIndex >= pageSections.length) return;
+                if (!pageSections[pageIndex].includes(item.text)) {
+                  pageSections[pageIndex] = `${pageSections[pageIndex].trim()}\n\n${item.text}`.trim();
+                  textarea.value = pageSections.join("\n\n<<<BOOK_PAGE_BREAK>>>\n\n");
+                }
+                includeButton.textContent = "已加入";
+                includeButton.disabled = true;
+              });
+              row.append(includeButton);
+              list.append(row);
+            }
+            reviewPanel.append(list);
+            panel.append(reviewPanel);
+          }
+        }
         const actions = element("div", "actions");
-        if (textEditable) {
-          const save = element("button", "secondary", "保存文本修改");
+        if (!hasActiveJob) {
+          const save = element("button", "secondary", hasAudioHistory ? "保存并更新音频" : "保存文本修改");
           save.type = "button";
           save.addEventListener("click", async () => {
+            save.disabled = true;
             try {
-              await api(`/api/books/${bookId}/text`, {
+              const result = await api(`/api/books/${bookId}/text`, {
                 method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: textarea.value }),
               });
+              messageNode.textContent = result.unchanged
+                ? "文本没有变化"
+                : result.regeneration
+                  ? "文本已保存，已自动排入音频 chunk 更新"
+                  : "文本已保存，请确认后继续生成音频";
               await openBook(bookId);
-            } catch (error) { messageNode.textContent = error.message; }
+            } catch (error) {
+              messageNode.textContent = error.message;
+              save.disabled = false;
+            }
           });
           actions.append(save);
+        }
+        if (book.current_stage === "text_review" && book.status === "awaiting_text_review" && !hasActiveJob) {
           const approve = element("button", "primary", "确认文本");
           approve.type = "button";
           approve.addEventListener("click", () => approveStage(bookId, "text", approve));
@@ -453,6 +563,20 @@
         const start = element("button", "primary", "生成前五页试听");
         start.type = "button";
         start.addEventListener("click", () => startJob(bookId, "preview_audio"));
+        section.append(start);
+      }
+      if (book.current_stage === "preview_video" && book.status === "ready") {
+        const section = addSection(mainNode, "预览视频待更新", "页面图片已更换；保留现有试听音频，仅重新渲染视频");
+        const start = element("button", "primary", "重新生成前五页视频");
+        start.type = "button";
+        start.addEventListener("click", () => startJob(bookId, "preview_video"));
+        section.append(start);
+      }
+      if (book.current_stage === "full_video" && book.status === "ready") {
+        const section = addSection(mainNode, "最终视频待更新", "页面图片已更换；保留全书音频，仅重新渲染最终视频");
+        const start = element("button", "primary", "重新生成最终视频");
+        start.type = "button";
+        start.addEventListener("click", () => startJob(bookId, "full_video"));
         section.append(start);
       }
       for (const [stage, kind, label, playerType, reviewStage, reviewStatus, approvalStage, approvalLabel] of [

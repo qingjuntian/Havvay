@@ -2,7 +2,7 @@
 
 ## Goal
 
-Provide a book-oriented web service for turning a formatted DOCX and a voice sample into a reviewed, page-aligned F5-TTS audiobook video. Each stage has reviewable artifacts, an explicit user approval, and enough persisted state to resume after a process restart.
+Provide a book-oriented web service for turning a Word/WPS-exported, laid-out PDF and a voice sample into a reviewed, page-aligned F5-TTS audiobook video. Each stage has reviewable artifacts, an explicit user approval, and enough persisted state to resume after a process restart.
 
 ## Deployment
 
@@ -21,8 +21,8 @@ For multi-user or higher-availability use, move the API, database, and artifact 
 
 ## User Workflow
 
-1. Create a book and upload the original formatted DOCX.
-2. Convert DOCX to PDF, render page PNGs, extract page text, and show the page images for review.
+1. Create a book and upload the authoritative Word/WPS-exported PDF.
+2. Render page PNGs and extract page text from that same PDF, then show the pages for review.
 3. Build a page-aligned TTS text file with `<<<BOOK_PAGE_BREAK>>>` between pages. Preserve raw extracted text separately from normalized text; show the normalized text for review and allow corrections.
 4. Upload a voice sample and enter its exact `REF_TEXT`. Convert to mono 24 kHz, trim leading/trailing silence, enforce the F5 reference duration limit, then provide original and processed audio playback for review.
 5. After approval, synthesize audio for the first five complete pages and show it for listening/review.
@@ -53,11 +53,11 @@ Per book, persist the original inputs, versioned intermediate/final artifacts, c
 
 ## Implementation Phases
 
-1. **Make the processing chain callable and testable.** Add the currently missing DOCX preparation entry point; wire number normalization into page extraction; retain raw and normalized page text; add a complete-page preview mode. The current `build_book_video.py` DOCX branch calls `src/prepare_docx.py`, but that file is absent. Its `--test-limit` is chunk-based and skips page timing/video, so it does not satisfy the five-page preview requirement.
+1. **Make the processing chain callable and testable.** Prepare page images and text from the same authoritative PDF; retain raw and normalized page text; add a complete-page preview mode. The `--test-limit` option is chunk-based and skips page timing/video, so it does not satisfy the five-page preview requirement.
 2. **Add persistent service foundations.** Implement book/artifact/job/event records, upload and download endpoints, stage/status endpoints, approval gates, and restart-safe job tracking.
 3. **Add the browser workflow.** Book list/detail, page image and text review, reference-audio review, preview audio/video, and final output review.
-4. **Connect background stages.** Run DOCX processing, reference preparation, F5 preview/full synthesis, page timing, and video rendering via a single-concurrency worker. Make retries idempotent and reuse chunks only when relevant content and settings hashes match.
-5. **Deploy and validate on AutoDL.** Configure persistent paths, GPU visibility, service supervision/restarts, restricted access, and backup/export. Exercise a short DOCX end to end, including edits, rejection, retry, and worker restart.
+4. **Connect background stages.** Run PDF preparation, reference preparation, F5 preview/full synthesis, page timing, and video rendering via a single-concurrency worker. Make retries idempotent and reuse chunks only when relevant content and settings hashes match.
+5. **Deploy and validate on AutoDL.** Configure persistent paths, GPU visibility, service supervision/restarts, restricted access, and backup/export. Exercise a short PDF end to end, including edits, rejection, retry, and worker restart.
 6. **Harden and scale.** Add authentication/authorization, upload limits and validation, cleanup/retention controls, operational monitoring, and optionally move the control plane and storage off AutoDL while keeping it as the GPU worker.
 
 ## Acceptance Checks
@@ -68,4 +68,4 @@ Per book, persist the original inputs, versioned intermediate/final artifacts, c
 - Preview audio and video contain exactly the first five complete pages, except when the book has fewer than five.
 - Full audio/video correspond to approved text, reference audio, and recorded settings.
 - An interrupted job is visible after restart and can be retried without losing approved inputs or unrelated artifacts.
-- Replacing a DOCX, text, or reference sample invalidates downstream approval and generated outputs.
+- Replacing the source PDF, text, or reference sample invalidates downstream approval and generated outputs.

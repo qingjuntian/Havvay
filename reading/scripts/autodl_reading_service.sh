@@ -4,9 +4,11 @@ set -Eeuo pipefail
 APP_DIR="${READING_APP_DIR:-/root/autodl-tmp/reading-service-dev}"
 SERVICE_HOME="${READING_SERVICE_HOME:-$APP_DIR/state}"
 CONDA_PYTHON="${READING_CONDA_PYTHON:-/root/miniconda3/envs/f5/bin/python}"
+RQ_CLI="${READING_RQ_CLI:-$(dirname "$CONDA_PYTHON")/rq}"
 REDIS_URL="${READING_REDIS_URL:-redis://127.0.0.1:6389/0}"
 REDIS_PORT="${READING_REDIS_PORT:-6389}"
 API_PORT="${READING_API_PORT:-8000}"
+ALLOW_CPU="${READING_ALLOW_CPU:-0}"
 REDIS_DIR="$APP_DIR/redis"
 LOG_DIR="$SERVICE_HOME/logs"
 PID_DIR="$SERVICE_HOME/pids"
@@ -15,6 +17,7 @@ PYTHONPATH="$APP_DIR${PYTHONPATH:+:$PYTHONPATH}"
 
 export READING_SERVICE_HOME="$SERVICE_HOME"
 export READING_REDIS_URL="$REDIS_URL"
+export READING_ALLOW_CPU="$ALLOW_CPU"
 export READING_VIDEO_PYTHON="${READING_VIDEO_PYTHON:-$CONDA_PYTHON}"
 export READING_F5_PYTHON="${READING_F5_PYTHON:-$CONDA_PYTHON}"
 export PYTHONPATH
@@ -35,16 +38,19 @@ require_command() {
 
 check_environment() {
     [[ -d "$APP_DIR/service" ]] || { log "Service code not found: $APP_DIR/service"; return 1; }
-    [[ -f "$APP_DIR/src/prepare_docx.py" ]] || { log "DOCX pipeline not found under $APP_DIR/src"; return 1; }
+    [[ -f "$APP_DIR/src/prepare_book.py" ]] || { log "PDF pipeline not found under $APP_DIR/src"; return 1; }
     [[ -x "$CONDA_PYTHON" ]] || { log "F5 Python not executable: $CONDA_PYTHON"; return 1; }
+    [[ -x "$RQ_CLI" ]] || { log "RQ command not executable: $RQ_CLI"; return 1; }
     require_command redis-server
     require_command redis-cli
     require_command curl
-    require_command libreoffice
     require_command ffmpeg
 
-    "$CONDA_PYTHON" -c 'import fastapi, fitz, f5_tts, moviepy, pypdf, redis, rq, torch, uvicorn; assert torch.cuda.is_available(), "CUDA is not available"'
-    "$CONDA_PYTHON" -c 'import sqlite3,sys; print("Python",sys.version.split()[0],"SQLite",sqlite3.sqlite_version,"CUDA/F5 imports OK")'
+    "$CONDA_PYTHON" -c 'import os, fastapi, fitz, f5_tts, moviepy, pypdf, redis, rq, torch, uvicorn; cuda=torch.cuda.is_available(); print("CUDA available:",cuda); assert cuda or os.environ.get("READING_ALLOW_CPU") == "1", "CUDA is unavailable; set READING_ALLOW_CPU=1 only to start in degraded CPU mode"'
+    if [[ "$ALLOW_CPU" == "1" ]]; then
+        log "CPU fallback enabled; F5 synthesis will be very slow until the GPU is available"
+    fi
+    "$CONDA_PYTHON" -c 'import sqlite3,sys; print("Python",sys.version.split()[0],"SQLite",sqlite3.sqlite_version,"service/F5 imports OK")'
 
     if [[ -f "$SERVICE_HOME/service.sqlite3" ]]; then
         "$CONDA_PYTHON" -c 'import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); result=db.execute("PRAGMA integrity_check").fetchone()[0]; print("SQLite integrity:",result); sys.exit(result != "ok")' "$SERVICE_HOME/service.sqlite3"
@@ -91,7 +97,7 @@ start_worker() {
         return
     fi
     rm -f "$WORKER_PID_FILE"
-    nohup "$CONDA_PYTHON" -m rq worker reading --url "$REDIS_URL" \
+    nohup "$RQ_CLI" worker reading --url "$REDIS_URL" \
         >>"$LOG_DIR/worker.log" 2>&1 < /dev/null &
     echo "$!" > "$WORKER_PID_FILE"
     log "RQ worker started (PID $(<"$WORKER_PID_FILE")); log: $LOG_DIR/worker.log"

@@ -17,6 +17,16 @@ ROOT = Path(__file__).resolve().parents[1]
 PAGE_BREAK_TOKEN = "<<<BOOK_PAGE_BREAK>>>"
 
 
+def changed_chunk_numbers(previous_chunks: list[tuple[str, float]], current_chunks: list[tuple[str, float]]) -> list[int]:
+    return [
+        index + 1
+        for index in range(max(len(previous_chunks), len(current_chunks)))
+        if index >= len(previous_chunks)
+        or index >= len(current_chunks)
+        or previous_chunks[index] != current_chunks[index]
+    ]
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -59,9 +69,13 @@ def _run_stage(
         for index, command in enumerate(commands, 1):
             store.update_job(job_id, "running", progress=0.1 + 0.7 * index / len(commands))
             result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=7200)
-            log_parts.append("COMMAND: " + " ".join(command) + "\n" + result.stdout + "\n" + result.stderr)
+            log_parts.append(
+                "COMMAND: " + " ".join(command)
+                + f"\nEXIT CODE: {result.returncode}\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+            )
             if result.returncode:
-                raise RuntimeError(result.stderr.strip() or result.stdout.strip() or f"Exit code {result.returncode}")
+                details = "\n".join(part for part in (result.stderr.strip(), result.stdout.strip()) if part)
+                raise RuntimeError(f"Command exited with status {result.returncode}" + (f"\n{details}" if details else ""))
         missing = [str(path) for _, path, _, _ in outputs if not path.is_file()]
         if missing:
             raise FileNotFoundError("Expected stage output missing: " + ", ".join(missing))
@@ -102,6 +116,18 @@ def _approved_text_pages(book: dict) -> tuple[list[str], list[dict]]:
     return text_pages, records
 
 
+def _latest_page_image_artifacts(book: dict) -> dict[int, dict]:
+    latest: dict[int, dict] = {}
+    for artifact in book["artifacts"]:
+        if artifact["stage"] != "pages" or artifact["kind"] != "page_image" or artifact.get("stale"):
+            continue
+        page_number = int(artifact["metadata"]["page"])
+        current = latest.get(page_number)
+        if current is None or artifact.get("metadata", {}).get("page_version", 1) > current.get("metadata", {}).get("page_version", 1):
+            latest[page_number] = artifact
+    return latest
+
+
 def prepare_reference(job_id: str) -> str:
     job = store.get_job(job_id)
     if job is None:
@@ -139,24 +165,27 @@ def _synthesize_audio(job_id: str, page_limit: int | None = None) -> str:
     if book is None:
         raise ValueError(f"Unknown book: {book_id}")
     stage = job["stage"]
+    update_existing = stage.endswith("_update")
+    audio_kind = stage.removesuffix("_update")
+    if audio_kind not in {"preview_audio", "full_audio"}:
+        raise ValueError(f"Unsupported audio synthesis stage: {stage}")
     text_pages, page_records = _approved_text_pages(book)
     if page_limit is not None:
         text_pages = text_pages[:page_limit]
         page_records = page_records[:page_limit]
 
-    output_dir = store.book_directory(book_id) / "artifacts" / stage / job_id
+    output_dir = store.book_directory(book_id) / "artifacts" / audio_kind / job_id
     f5_dir = output_dir / "f5"
     pages_dir = output_dir / "pages"
     pages_dir.mkdir(parents=True, exist_ok=True)
-    image_artifacts = sorted(
-        [item for item in book["artifacts"] if item["stage"] == "pages" and item["kind"] == "page_image"],
-        key=lambda item: item["metadata"]["page"],
-    )[:len(page_records)]
-    if len(image_artifacts) != len(page_records):
+    image_artifacts = _latest_page_image_artifacts(book)
+    required_page_numbers = set(range(1, len(page_records) + 1))
+    if not required_page_numbers.issubset(image_artifacts):
         raise ValueError("Page image files do not match the approved text pages")
-    for artifact in image_artifacts:
+    for page_number in sorted(required_page_numbers):
+        artifact = image_artifacts[page_number]
         image_path = _artifact_path(artifact)
-        shutil.copy2(image_path, pages_dir / image_path.name)
+        shutil.copy2(image_path, pages_dir / f"page_{page_number:04d}.png")
 
     text_path = output_dir / "book.txt"
     text_path.write_text((f"\n\n{PAGE_BREAK_TOKEN}\n\n".join(text_pages)) + "\n", encoding="utf-8")
@@ -169,29 +198,77 @@ def _synthesize_audio(job_id: str, page_limit: int | None = None) -> str:
     audio_path = f5_dir / "audiobook.mp3"
     wav_path = f5_dir / "audiobook.wav"
     f5_python = os.environ.get("READING_F5_PYTHON", sys.executable)
+    max_chars = int(os.environ.get("READING_F5_MAX_CHARS", "100"))
+    rerender_chunks: list[int] = []
+    if update_existing:
+        review_stage = "final_audio_review" if audio_kind == "full_audio" else "preview_audio_review"
+        source_audio = _latest_artifact(book, review_stage, "audiobook_mp3")
+        source_chunks_dir = _artifact_path(source_audio).parent / "chunks"
+        destination_chunks_dir = f5_dir / "chunks"
+        destination_chunks_dir.mkdir(parents=True, exist_ok=True)
+        if source_chunks_dir.is_dir():
+            for source_chunk in source_chunks_dir.glob("chunk_*"):
+                shutil.copy2(source_chunk, destination_chunks_dir / source_chunk.name)
+
+        text_artifacts = sorted(
+            (item for item in book["artifacts"] if item["stage"] == "text" and item["kind"] == "normalized_text"),
+            key=lambda item: item["version"],
+        )
+        current_text_version = text_artifacts[-1]["version"] if text_artifacts else 0
+        previous_text_artifact = next(
+            (item for item in reversed(text_artifacts) if item["version"] < current_text_version),
+            None,
+        )
+        from src import narrate_book_f5 as f5_script
+
+        f5_script.MAX_CHARS = max_chars
+        current_pages = text_path.read_text(encoding="utf-8").split(PAGE_BREAK_TOKEN)
+        if page_limit is not None:
+            current_pages = current_pages[:page_limit]
+        current_chunks = f5_script.build_chunks(f"\n\n{PAGE_BREAK_TOKEN}\n\n".join(current_pages))
+        if previous_text_artifact is None:
+            rerender_chunks = list(range(1, len(current_chunks) + 1))
+        else:
+            previous_text = _artifact_path(previous_text_artifact).read_text(encoding="utf-8")
+            previous_pages = previous_text.split(PAGE_BREAK_TOKEN)
+            if page_limit is not None:
+                previous_pages = previous_pages[:page_limit]
+            previous_chunks = f5_script.build_chunks(f"\n\n{PAGE_BREAK_TOKEN}\n\n".join(previous_pages))
+            rerender_chunks = changed_chunk_numbers(previous_chunks, current_chunks)
+
     command = [
         f5_python, str(ROOT / "src/narrate_book_f5.py"),
         "--book", str(text_path), "--reference-audio", str(reference_audio),
         "--reference-text-file", str(reference_text), "--output-dir", str(f5_dir),
         "--speed", os.environ.get("READING_F5_SPEED", "1.2"),
         "--nfe-step", os.environ.get("READING_F5_NFE_STEP", "32"),
-        "--max-chars", os.environ.get("READING_F5_MAX_CHARS", "100"),
+        "--max-chars", str(max_chars),
         "--test-limit", "0",
     ]
+    if rerender_chunks:
+        command += ["--rerender-chunks", ",".join(map(str, rerender_chunks))]
     resulting_stage, resulting_status = (
         ("preview_audio_review", "awaiting_preview_audio_review")
-        if stage == "preview_audio"
+        if audio_kind == "preview_audio"
         else ("final_audio_review", "awaiting_final_audio_review")
     )
     return _run_stage(
         job_id, book_id, stage, output_dir, [command],
         [
-            ("audiobook_mp3", audio_path, "audio/mpeg", {"page_count": len(page_records)}),
-            ("audiobook_wav", wav_path, "audio/wav", {"page_count": len(page_records)}),
-            ("page_metadata", pages_path, "application/json", {"page_count": len(page_records)}),
+            ("audiobook_mp3", audio_path, "audio/mpeg", {"page_count": len(page_records), "text_version": current_text_version if update_existing else text_artifact_version(book)}),
+            ("audiobook_wav", wav_path, "audio/wav", {"page_count": len(page_records), "text_version": current_text_version if update_existing else text_artifact_version(book)}),
+            ("page_metadata", pages_path, "application/json", {"page_count": len(page_records), "text_version": current_text_version if update_existing else text_artifact_version(book)}),
         ],
         resulting_stage, resulting_status,
     )
+
+
+def text_artifact_version(book: dict) -> int | None:
+    artifacts = [
+        item["version"] for item in book["artifacts"]
+        if item["stage"] == "text" and item["kind"] == "normalized_text"
+    ]
+    return max(artifacts, default=None)
 
 
 def synthesize_preview_audio(job_id: str) -> str:
@@ -199,6 +276,14 @@ def synthesize_preview_audio(job_id: str) -> str:
 
 
 def synthesize_full_audio(job_id: str) -> str:
+    return _synthesize_audio(job_id)
+
+
+def synthesize_preview_audio_update(job_id: str) -> str:
+    return _synthesize_audio(job_id, page_limit=5)
+
+
+def synthesize_full_audio_update(job_id: str) -> str:
     return _synthesize_audio(job_id)
 
 
@@ -218,6 +303,25 @@ def _render_video(job_id: str, preview: bool) -> str:
     video_path = output_dir / ("preview.mp4" if preview else "reading.mp4")
     pdf_path = _artifact_path(_latest_artifact(book, "pages", "rendered_pdf"))
     video_python = os.environ.get("READING_VIDEO_PYTHON", sys.executable)
+    images_dir = output_dir / "pages"
+    images_dir.mkdir(parents=True, exist_ok=True)
+    latest_page_images: dict[int, dict] = {}
+    for artifact in book["artifacts"]:
+        if artifact["stage"] != "pages" or artifact["kind"] != "page_image" or artifact.get("stale"):
+            continue
+        page_number = int(artifact["metadata"]["page"])
+        current = latest_page_images.get(page_number)
+        if current is None or artifact["version"] > current["version"]:
+            latest_page_images[page_number] = artifact
+    page_records = json.loads(_artifact_path(_latest_artifact(book, audio_stage, "page_metadata")).read_text(encoding="utf-8"))["pages"]
+    expected_pages = len(page_records)
+    required_page_numbers = set(range(1, expected_pages + 1))
+    if not required_page_numbers.issubset(latest_page_images):
+        raise ValueError("Current page images do not match the audio page metadata")
+    for page_number in sorted(required_page_numbers):
+        artifact = latest_page_images[page_number]
+        image_path = _artifact_path(artifact)
+        shutil.copy2(image_path, images_dir / f"page_{page_number:04d}.png")
     commands = [
         [
             video_python, str(ROOT / "src/page_timings.py"), "--pdf", str(pdf_path),
@@ -226,7 +330,7 @@ def _render_video(job_id: str, preview: bool) -> str:
         ],
         [
             video_python, str(ROOT / "src/book_video.py"), "--audio", str(audio_path),
-            "--images-dir", str(audio_root / "pages"), "--timings", str(timings_path),
+            "--images-dir", str(images_dir), "--timings", str(timings_path),
             "--width", "720", "--height", "1280", "--fps", "24", "--transition", "0.8",
             "--output", str(video_path),
         ],
@@ -270,16 +374,17 @@ def prepare_document(job_id: str) -> str:
     pages_path = output_dir / "book_pages.json"
     checklist_path = output_dir / "book_checklist.json"
     log_path = output_dir / "prepare.log"
-    input_path = store.book_directory(book_id) / "inputs" / "original.docx"
+    input_path = store.book_directory(book_id) / "inputs" / "original.pdf"
     output_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(input_path, pdf_path)
 
     store.update_job(job_id, "running", progress=0.05)
     store.set_book_state(book_id, "document", "preparing")
     command = [
         os.environ.get("READING_VIDEO_PYTHON", sys.executable),
-        str(ROOT / "src/prepare_docx.py"),
-        "--docx", str(input_path),
-        "--pdf-output", str(pdf_path),
+        str(ROOT / "src/prepare_book.py"),
+        "--pdf", str(pdf_path),
         "--images-dir", str(images_dir),
         "--text-output", str(text_path),
         "--pages-output", str(pages_path),

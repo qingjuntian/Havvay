@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import uuid
@@ -13,8 +14,10 @@ from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
 from service import store
+from src.text_normalize import normalize_text
 
 MAX_UPLOAD_BYTES = int(os.environ.get("READING_MAX_UPLOAD_BYTES", str(200 * 1024 * 1024)))
+MAX_PAGE_IMAGE_BYTES = int(os.environ.get("READING_MAX_PAGE_IMAGE_BYTES", str(25 * 1024 * 1024)))
 UI_PATH = Path(__file__).with_name("ui.html")
 app = FastAPI(title="Reading Audiobook Service", version="0.1.0")
 
@@ -53,7 +56,10 @@ def _enqueue_job(book_id: str, stage: str, task_name: str) -> dict:
         from rq import Queue
 
         connection = Redis.from_url(os.environ.get("READING_REDIS_URL", "redis://127.0.0.1:6379/0"))
-        timeout = 86400 if stage in {"preview_audio", "full_audio", "preview_video", "full_video"} else 7200
+        timeout = 86400 if stage in {
+            "preview_audio", "preview_audio_update", "full_audio", "full_audio_update",
+            "preview_video", "full_video",
+        } else 7200
         queue_job = Queue("reading", connection=connection).enqueue(task_name, job_id, job_timeout=timeout)
         store.update_job(job_id, "queued", queue_id=queue_job.id)
         return {"id": job_id, "status": "queued"}
@@ -84,38 +90,42 @@ def books() -> list[dict]:
 
 
 @app.post("/api/books", status_code=201)
-async def create_book(docx: UploadFile = File(...), title: str = Form(default="")) -> dict:
-    filename = Path(docx.filename or "book.docx").name
-    if Path(filename).suffix.lower() != ".docx":
-        raise HTTPException(status_code=415, detail="Upload a .docx document")
+async def create_book(pdf: UploadFile = File(...), title: str = Form(default="")) -> dict:
+    filename = Path(pdf.filename or "book.pdf").name
+    if Path(filename).suffix.lower() != ".pdf":
+        raise HTTPException(status_code=415, detail="Upload a laid-out .pdf document")
 
     book_id = str(uuid.uuid4())
     book_root = store.book_directory(book_id)
-    input_path = book_root / "inputs" / "original.docx"
+    input_path = book_root / "inputs" / "original.pdf"
     input_path.parent.mkdir(parents=True, exist_ok=True)
     written = 0
     try:
         with input_path.open("wb") as target:
-            while block := await docx.read(1024 * 1024):
+            while block := await pdf.read(1024 * 1024):
                 written += len(block)
                 if written > MAX_UPLOAD_BYTES:
-                    raise HTTPException(status_code=413, detail="DOCX exceeds the configured upload limit")
+                    raise HTTPException(status_code=413, detail="PDF exceeds the configured upload limit")
                 target.write(block)
     except Exception:
         input_path.unlink(missing_ok=True)
         raise
     finally:
-        await docx.close()
+        await pdf.close()
 
     if written == 0:
         input_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=400, detail="The uploaded DOCX is empty")
+        raise HTTPException(status_code=400, detail="The uploaded PDF is empty")
+    with input_path.open("rb") as uploaded_file:
+        pdf_header = uploaded_file.read(1024)
+    if b"%PDF-" not in pdf_header:
+        input_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="The uploaded file is not a valid PDF")
 
     book_title = title.strip() or Path(filename).stem or "Untitled book"
     store.create_book(book_id, book_title)
     store.add_artifact(
-        book_id, "input", "docx", input_path, _sha256(input_path),
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        book_id, "input", "source_pdf", input_path, _sha256(input_path), "application/pdf",
         {"original_filename": filename, "bytes": written},
     )
     job = _enqueue_document_job(book_id)
@@ -193,6 +203,97 @@ def book_detail(book_id: str) -> dict:
     return book
 
 
+@app.post("/api/books/{book_id}/pages/{page_number}/image")
+async def replace_page_image(book_id: str, page_number: int, image: UploadFile = File(...)) -> dict:
+    book = store.get_book(book_id)
+    if book is None:
+        raise HTTPException(status_code=404, detail="Book not found")
+    if page_number < 1:
+        raise HTTPException(status_code=400, detail="Page number must be positive")
+    if store.count_active_jobs(book_id):
+        raise HTTPException(status_code=409, detail="Wait for this book's active task to finish before replacing a page image")
+
+    metadata_artifacts = [
+        item for item in book["artifacts"]
+        if item["stage"] == "pages" and item["kind"] == "page_metadata" and not item["stale"]
+    ]
+    if not metadata_artifacts:
+        raise HTTPException(status_code=409, detail="Page metadata is not ready; prepare the uploaded PDF first")
+    metadata_artifact = max(metadata_artifacts, key=lambda item: item["version"])
+    metadata_path = (store.service_home() / metadata_artifact["path"]).resolve()
+    try:
+        metadata_path.relative_to(store.service_home().resolve())
+        page_count = len(json.loads(metadata_path.read_text(encoding="utf-8"))["pages"])
+    except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=500, detail="Could not read the book's page metadata") from exc
+    if page_number > page_count:
+        raise HTTPException(status_code=404, detail=f"Page {page_number} does not exist; this book has {page_count} pages")
+
+    raw_image = await image.read(MAX_PAGE_IMAGE_BYTES + 1)
+    await image.close()
+    if not raw_image:
+        raise HTTPException(status_code=400, detail="The uploaded image is empty")
+    if len(raw_image) > MAX_PAGE_IMAGE_BYTES:
+        raise HTTPException(status_code=413, detail="Page image exceeds the 25 MB upload limit")
+
+    try:
+        from PIL import Image, ImageOps, UnidentifiedImageError
+
+        with Image.open(io.BytesIO(raw_image)) as source:
+            if source.format not in {"PNG", "JPEG", "WEBP"}:
+                raise HTTPException(status_code=415, detail="Upload a PNG, JPEG, or WebP page image")
+            if source.width * source.height > 100_000_000:
+                raise HTTPException(status_code=413, detail="Page image dimensions are too large")
+            normalized = ImageOps.exif_transpose(source).convert("RGB")
+            output = io.BytesIO()
+            normalized.save(output, format="PNG", optimize=True)
+    except HTTPException:
+        raise
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=415, detail="The uploaded file is not a valid supported image") from exc
+
+    previous_versions = [
+        item["version"] for item in book["artifacts"]
+        if item["stage"] == "pages" and item["kind"] == "page_image"
+        and item["metadata"].get("page") == page_number
+    ]
+    page_version = max(previous_versions, default=0) + 1
+    image_path = (
+        store.book_directory(book_id) / "artifacts" / "page_images"
+        / f"page_{page_number:04d}" / f"replacement_{page_version:03d}.png"
+    )
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    image_path.write_bytes(output.getvalue())
+    try:
+        artifact = store.add_artifact(
+            book_id, "pages", "page_image", image_path, _sha256(image_path), "image/png",
+            {
+                "page": page_number,
+                "replacement": True,
+                "page_version": page_version,
+                "original_filename": Path(image.filename or "page.png").name,
+                "width": normalized.width,
+                "height": normalized.height,
+            },
+        )
+        invalidated_count = store.invalidate_video_artifacts(book_id, f"Page {page_number} image replaced")
+        store.add_event(
+            book_id, "pages", "page_image_replaced", "user",
+            f"Replaced page {page_number}; invalidated {invalidated_count} video artifacts",
+            page_version,
+        )
+        if store.has_valid_artifact(book_id, "audiobook_mp3", ("final_audio_review",)):
+            store.set_book_state(book_id, "full_video", "ready")
+        elif store.has_valid_artifact(book_id, "audiobook_mp3", ("preview_audio_review",)):
+            store.set_book_state(book_id, "preview_video", "ready")
+        else:
+            store.set_book_state(book_id, "pages_review", "awaiting_page_review")
+    except Exception:
+        image_path.unlink(missing_ok=True)
+        raise
+    return {**artifact, "invalidated_video_artifacts": invalidated_count}
+
+
 @app.delete("/api/books/{book_id}")
 def delete_book(book_id: str) -> dict[str, str]:
     try:
@@ -214,11 +315,12 @@ def update_text(book_id: str, update: TextUpdate) -> dict:
     book = store.get_book(book_id)
     if book is None:
         raise HTTPException(status_code=404, detail="Book not found")
-    if book["current_stage"] != "text_review" or book["status"] != "awaiting_text_review":
-        raise HTTPException(status_code=409, detail="Text is locked after approval; reopen text review before editing")
-    if not update.text.strip():
+    if any(job["status"] in {"queued", "running"} for job in book["jobs"]):
+        raise HTTPException(status_code=409, detail="Wait for the current processing task to finish before editing text")
+    normalized_text = normalize_text(update.text)
+    if not normalized_text.strip():
         raise HTTPException(status_code=400, detail="Text cannot be empty")
-    if len(update.text) > 2_000_000:
+    if len(normalized_text) > 2_000_000:
         raise HTTPException(status_code=413, detail="Text exceeds the 2 MB limit")
     page_artifacts = [
         item for item in book["artifacts"] if item["stage"] == "pages" and item["kind"] == "page_metadata"
@@ -227,8 +329,28 @@ def update_text(book_id: str, update: TextUpdate) -> dict:
         latest_pages = max(page_artifacts, key=lambda item: item["version"])
         metadata_path = (store.service_home() / latest_pages["path"]).resolve()
         page_count = len(json.loads(metadata_path.read_text(encoding="utf-8"))["pages"])
-        if update.text.count("<<<BOOK_PAGE_BREAK>>>") != page_count - 1:
+        if normalized_text.count("<<<BOOK_PAGE_BREAK>>>") != page_count - 1:
             raise HTTPException(status_code=400, detail=f"Text must keep exactly {page_count - 1} page-break markers")
+
+    latest_text_artifact = max(
+        (item for item in book["artifacts"] if item["stage"] == "text" and item["kind"] == "normalized_text"),
+        key=lambda item: item["version"],
+        default=None,
+    )
+    if latest_text_artifact is not None:
+        previous_text_path = (store.service_home() / latest_text_artifact["path"]).resolve()
+        previous_text_path.relative_to(store.service_home().resolve())
+        if previous_text_path.is_file() and previous_text_path.read_text(encoding="utf-8") == normalized_text:
+            return {**latest_text_artifact, "unchanged": True, "regeneration": None}
+
+    final_audio_exists = any(
+        item["kind"] == "audiobook_mp3" and item["stage"] == "final_audio_review"
+        for item in book["artifacts"]
+    )
+    preview_audio_exists = any(
+        item["kind"] == "audiobook_mp3" and item["stage"] == "preview_audio_review"
+        for item in book["artifacts"]
+    )
 
     versions = [
         item["version"] for item in book["artifacts"]
@@ -237,15 +359,27 @@ def update_text(book_id: str, update: TextUpdate) -> dict:
     version = max(versions, default=0) + 1
     output_path = store.book_directory(book_id) / "artifacts" / "text" / f"v{version}" / "book.txt"
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(update.text, encoding="utf-8")
+    output_path.write_text(normalized_text, encoding="utf-8")
     artifact = store.add_artifact(
         book_id, "text", "normalized_text", output_path, _sha256(output_path), "text/plain; charset=utf-8",
         {"edited_by_user": True},
     )
-    store.set_book_state(book_id, "text_review", "awaiting_text_review")
+    invalidated_count = store.invalidate_text_dependent_artifacts(book_id, f"TTS text changed to version {version}")
     store.add_event(book_id, "text", "text_edited", "user", "Normalized TTS text updated", version)
-    store.add_event(book_id, "text", "downstream_invalidated", "system", "Text changed; later approvals must be repeated", version)
-    return artifact
+    store.add_event(
+        book_id, "text", "downstream_invalidated", "system",
+        f"Invalidated {invalidated_count} audio/video artifacts derived from the previous text", version,
+    )
+
+    if final_audio_exists or preview_audio_exists:
+        audio_kind = "full_audio" if final_audio_exists else "preview_audio"
+        update_stage = f"{audio_kind}_update"
+        task_name = "service.worker.synthesize_full_audio_update" if final_audio_exists else "service.worker.synthesize_preview_audio_update"
+        queued_job = _enqueue_job(book_id, update_stage, task_name)
+        return {**artifact, "invalidated_artifacts": invalidated_count, "regeneration": queued_job}
+
+    store.set_book_state(book_id, "text_review", "awaiting_text_review")
+    return {**artifact, "invalidated_artifacts": invalidated_count, "regeneration": None}
 
 
 @app.post("/api/books/{book_id}/approve")
@@ -265,6 +399,8 @@ def approve_stage(book_id: str, approval: Approval) -> dict:
     if approval.stage not in expected:
         raise HTTPException(status_code=400, detail="Unknown approval stage")
     current_stage, current_status, next_stage, next_status = expected[approval.stage]
+    if approval.stage == "text" and store.has_valid_artifact(book_id, "processed_audio", ("reference_review",)):
+        next_stage, next_status = "preview_audio", "ready"
     if book["current_stage"] != current_stage or book["status"] != current_status:
         raise HTTPException(status_code=409, detail="This stage is not currently waiting for approval")
     artifact_stage = {
@@ -314,14 +450,20 @@ def start_stage_job(book_id: str, stage: str) -> dict:
         "preview_audio": (
             "preview_audio", {"ready", "queue_unavailable", "failed"}, "service.worker.synthesize_preview_audio",
         ),
+        "preview_audio_update": (
+            "preview_audio_update", {"queue_unavailable", "failed"}, "service.worker.synthesize_preview_audio_update",
+        ),
         "preview_video": (
-            "preview_video", {"queue_unavailable", "failed"}, "service.worker.render_preview_video",
+            "preview_video", {"ready", "queue_unavailable", "failed"}, "service.worker.render_preview_video",
         ),
         "full_audio": (
             "full_audio", {"ready", "queue_unavailable", "failed"}, "service.worker.synthesize_full_audio",
         ),
+        "full_audio_update": (
+            "full_audio_update", {"queue_unavailable", "failed"}, "service.worker.synthesize_full_audio_update",
+        ),
         "full_video": (
-            "full_video", {"queue_unavailable", "failed"}, "service.worker.render_full_video",
+            "full_video", {"ready", "queue_unavailable", "failed"}, "service.worker.render_full_video",
         ),
     }
     if stage not in allowed:

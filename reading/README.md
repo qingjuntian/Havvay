@@ -90,35 +90,39 @@ deactivate                        # exit when done
 - All pipelines **chunk** the book, generate each piece, and **stitch** to one `audiobook.mp3`. Resume is content-aware: edit `data/book.txt` and re-run — only changed chunks regenerate.
 - Reference-audio quality drives clone quality far more than quantity; a clean ~15 s clip is ideal.
 
-### MP3 -> manuscript-following reading video
+### Laid-out PDF -> page-aligned audiobook video
 
-After an audiobook MP3 exists, create a video whose visible manuscript advances with the narration:
+Export the document to PDF from the Word/WPS installation that defines its final pagination and
+fonts. The pipeline renders page images and extracts page text from that same PDF, so the AutoDL
+renderer does not reflow the document. Install the Python dependencies first:
 
 ```bash
 brew install ffmpeg
 python3 -m pip install -r requirements-video.txt
-python3 src/book_video.py --audio output/xtts/audiobook.mp3 --output output/reading.mp4
 ```
 
-To use scanned page images as the video visuals, pass their directory. Images are sorted by
-the numeric suffix and advanced according to the narration progress:
+Run the end-to-end pipeline with the PDF and voice sample:
 
 ```bash
-python3 src/book_video.py \
-	--audio data/audiobook.mp3 \
-	--text data/book.txt \
-	--images-dir data/第一章第一节 \
-	--model base \
-	--model-dir .models \
-	--output output/第一章第一节.mp4
+python3 src/build_book_video.py \
+	--pdf data/第一章社会工作服务的内涵.pdf \
+    --voice data/voice.mp3 \
+    --ref-text "填写 voice.mp3 中实际说出的完整内容" \
+    --f5-python .venv-f5/bin/python \
+    --speed 1.2 \
+    --output output/book.mp4
 ```
 
-For exact page timing, derive a page-to-chunk map from the final PDF and the original chunk WAVs.
-Chunks that cross a PDF page boundary are split proportionally by text length:
+The PDF route creates page PNGs, normalized page text, F5 chunks, page timing data, and the final
+video under `output/book_build/`. The uploaded PDF remains the source of page layout and fonts.
+
+For existing audio and a page-image directory, the lower-level video workflow remains available. First
+prepare page text from the authoritative PDF, then generate timings and video:
 
 ```bash
 python3 src/page_timings.py \
 	--pdf data/第一章社会工作服务的内涵.pdf \
+	--pages-json output/book_build/book_pages.json \
 	--chunks-dir output/f5/chunks \
 	--output output/page_timings.json
 
@@ -131,6 +135,10 @@ python3 src/book_video.py \
 
 The timings mode is fully local and does not use Whisper. Page changes use a short paper-like
 fold and shadow transition; adjust it with `--transition`, in seconds.
+
+The PDF route places explicit page markers in the TTS input, so chunks do not cross page
+boundaries. Page timing sums complete chunk WAV durations rather than proportionally estimating
+audio time from character counts. Ordinary page-end padding is removed; heading pauses are kept.
 
 The script writes `reading.mp4`, `reading.srt`, and `reading.json`. The `small` Whisper model is a reasonable starting point for Chinese; use `--model base` for a faster first test or `--model medium` for better recognition if the machine has enough memory. Pass `--font` if the automatic macOS CJK font is not suitable.
 

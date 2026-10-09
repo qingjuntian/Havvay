@@ -97,6 +97,11 @@ def init_db() -> None:
                 artifact_version INTEGER,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS invalidated_artifacts (
+                artifact_id TEXT PRIMARY KEY REFERENCES artifacts(id) ON DELETE CASCADE,
+                reason TEXT NOT NULL,
+                invalidated_at TEXT NOT NULL
+            );
             CREATE INDEX IF NOT EXISTS artifacts_book_idx ON artifacts(book_id, created_at);
             CREATE INDEX IF NOT EXISTS jobs_book_idx ON jobs(book_id, created_at);
             CREATE INDEX IF NOT EXISTS events_book_idx ON events(book_id, id);
@@ -111,7 +116,7 @@ def create_book(book_id: str, title: str) -> None:
             "INSERT INTO books(id, title, current_stage, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
             (book_id, title, "document", "uploaded", now, now),
         )
-    add_event(book_id, "document", "book_created", "user", "DOCX uploaded")
+    add_event(book_id, "document", "book_created", "user", "Laid-out PDF uploaded")
 
 
 def get_book(book_id: str) -> dict[str, Any] | None:
@@ -123,7 +128,10 @@ def get_book(book_id: str) -> dict[str, Any] | None:
         book["artifacts"] = [
             _artifact_dict(item)
             for item in db.execute(
-                "SELECT * FROM artifacts WHERE book_id = ? ORDER BY created_at, kind, version", (book_id,)
+                "SELECT a.*, (i.artifact_id IS NOT NULL) AS stale "
+                "FROM artifacts a LEFT JOIN invalidated_artifacts i ON i.artifact_id = a.id "
+                "WHERE a.book_id = ? ORDER BY a.created_at, a.kind, a.version",
+                (book_id,),
             ).fetchall()
         ]
         book["jobs"] = [
@@ -176,6 +184,62 @@ def delete_book(book_id: str) -> str:
     if trash_path is not None:
         shutil.rmtree(trash_path, ignore_errors=True)
     return "deleted"
+
+
+def invalidate_video_artifacts(book_id: str, reason: str) -> int:
+    now = _now()
+    with connect() as db:
+        rows = db.execute(
+            "SELECT id FROM artifacts WHERE book_id = ? "
+            "AND stage IN ('preview_video_review', 'final_video_review') "
+            "AND kind IN ('video_mp4', 'page_timings') "
+            "AND id NOT IN (SELECT artifact_id FROM invalidated_artifacts)",
+            (book_id,),
+        ).fetchall()
+        db.executemany(
+            "INSERT INTO invalidated_artifacts(artifact_id, reason, invalidated_at) VALUES (?, ?, ?)",
+            [(row["id"], reason, now) for row in rows],
+        )
+        db.execute("UPDATE books SET updated_at = ? WHERE id = ?", (now, book_id))
+        return len(rows)
+
+
+def invalidate_text_dependent_artifacts(book_id: str, reason: str) -> int:
+    now = _now()
+    with connect() as db:
+        rows = db.execute(
+            "SELECT id FROM artifacts WHERE book_id = ? AND ("
+            "(stage = 'preview_audio_review' AND kind IN ('audiobook_mp3', 'audiobook_wav', 'page_metadata')) OR "
+            "(stage = 'final_audio_review' AND kind IN ('audiobook_mp3', 'audiobook_wav', 'page_metadata')) OR "
+            "(stage IN ('preview_video_review', 'final_video_review') AND kind IN ('video_mp4', 'page_timings'))"
+            ") AND id NOT IN (SELECT artifact_id FROM invalidated_artifacts)",
+            (book_id,),
+        ).fetchall()
+        db.executemany(
+            "INSERT INTO invalidated_artifacts(artifact_id, reason, invalidated_at) VALUES (?, ?, ?)",
+            [(row["id"], reason, now) for row in rows],
+        )
+        db.execute("UPDATE books SET updated_at = ? WHERE id = ?", (now, book_id))
+        return len(rows)
+
+
+def count_active_jobs(book_id: str) -> int:
+    with connect() as db:
+        return int(db.execute(
+            "SELECT COUNT(*) FROM jobs WHERE book_id = ? AND status IN ('queued', 'running')",
+            (book_id,),
+        ).fetchone()[0])
+
+
+def has_valid_artifact(book_id: str, kind: str, stages: tuple[str, ...]) -> bool:
+    placeholders = ",".join("?" for _ in stages)
+    with connect() as db:
+        return db.execute(
+            f"SELECT 1 FROM artifacts a WHERE a.book_id = ? AND a.kind = ? "
+            f"AND a.stage IN ({placeholders}) "
+            "AND NOT EXISTS (SELECT 1 FROM invalidated_artifacts i WHERE i.artifact_id = a.id) LIMIT 1",
+            (book_id, kind, *stages),
+        ).fetchone() is not None
 
 
 def list_books() -> list[dict[str, Any]]:

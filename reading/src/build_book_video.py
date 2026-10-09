@@ -19,11 +19,8 @@ def run(command: list[str]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build a page-timed book video from a formatted DOCX or PDF.")
-    source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument("--docx", help="Formatted Word document; pages and images are generated from its PDF render")
-    source.add_argument("--pdf", help="Pre-rendered PDF; use with --images-dir")
-    parser.add_argument("--images-dir", default=None, help="Existing page PNGs; required only with --pdf")
+    parser = argparse.ArgumentParser(description="Build a page-timed book video from a laid-out PDF.")
+    parser.add_argument("--pdf", required=True, help="Laid-out PDF; pages and images are generated from this file")
     parser.add_argument("--voice", required=True, help="Raw voice sample")
     parser.add_argument("--ref-text", required=True, help="Exact transcript of the retained reference speech")
     parser.add_argument("--f5-python", default=sys.executable, help="Python executable with F5-TTS installed")
@@ -49,7 +46,6 @@ def main() -> None:
     work = (ROOT / args.work_dir).resolve()
     reference_dir = work / "reference"
     f5_dir = work / "f5"
-    render_dir = work / "rendered"
     work.mkdir(parents=True, exist_ok=True)
     reference_dir.mkdir(parents=True, exist_ok=True)
     book_text = work / "book.txt"
@@ -59,19 +55,11 @@ def main() -> None:
     timings = work / "page_timings.json"
     audio = f5_dir / "audiobook.mp3"
 
-    if args.docx:
-        pdf = render_dir / "book.pdf"
-        images_dir = work / "pages"
-        run([sys.executable, str(SRC / "prepare_docx.py"), "--docx", args.docx,
-             "--pdf-output", str(pdf), "--images-dir", str(images_dir),
-             "--text-output", str(book_text), "--pages-output", str(pages_json)])
-    else:
-        if not args.images_dir:
-            raise SystemExit("--images-dir is required when using --pdf")
-        pdf = (ROOT / args.pdf).resolve()
-        images_dir = (ROOT / args.images_dir).resolve()
-        run([sys.executable, str(SRC / "prepare_book.py"), "--pdf", str(pdf),
-             "--text-output", str(book_text), "--pages-output", str(pages_json)])
+    pdf = (ROOT / args.pdf).resolve()
+    images_dir = work / "pages"
+    run([sys.executable, str(SRC / "prepare_book.py"), "--pdf", str(pdf),
+         "--images-dir", str(images_dir), "--text-output", str(book_text),
+         "--pages-output", str(pages_json)])
 
     image_count = len(list(images_dir.glob("*.png")))
     if image_count == 0:

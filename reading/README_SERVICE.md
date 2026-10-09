@@ -1,6 +1,6 @@
 # Reading Studio Service
 
-The service workflow now covers DOCX upload and preparation, page/text review, reference-audio preprocessing and review, first-five-page audio/video preview, and full audiobook/video generation. Validate each stage on AutoDL before treating the service as production-ready; this local workspace has no LibreOffice or PDF dependencies installed.
+The service workflow covers laid-out PDF upload and preparation, page/text review, reference-audio preprocessing and review, first-five-page audio/video preview, and full audiobook/video generation. Validate each stage on AutoDL before treating the service as production-ready.
 
 ## AutoDL Setup
 
@@ -15,7 +15,7 @@ source .venv-service/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements-video.txt -r requirements-service.txt
 apt-get update
-apt-get install -y libreoffice-writer fonts-noto-cjk redis-server ffmpeg
+apt-get install -y redis-server ffmpeg
 ```
 
 Set persistent paths and start Redis:
@@ -68,7 +68,15 @@ cd /root/autodl-tmp/reading-service-dev
 bash scripts/autodl_reading_service.sh start
 ```
 
-The script validates the F5/CUDA and DOCX/media dependencies, checks SQLite integrity when a database exists, starts Redis with AOF under the data volume, starts one RQ worker, and starts the API on `127.0.0.1:8000`. It is safe to rerun: it checks API health and the Redis RQ worker registry before starting duplicate processes.
+The script validates the F5/CUDA and PDF/media dependencies, checks SQLite integrity when a database exists, starts Redis with AOF under the data volume, starts one RQ worker, and starts the API on `127.0.0.1:8000`. It is safe to rerun: it checks API health and the Redis RQ worker registry before starting duplicate processes.
+
+GPU is required by default. If AutoDL has temporarily restarted the container without attaching its GPU, the normal start command stops at the CUDA check. To bring up the API in degraded mode, explicitly opt into CPU fallback:
+
+```bash
+READING_ALLOW_CPU=1 bash scripts/autodl_reading_service.sh start
+```
+
+F5 synthesis can then run on CPU but will be very slow. Restore GPU access from the AutoDL console and run the normal `start` command before generating long previews/books.
 
 Other commands:
 
@@ -85,10 +93,12 @@ Logs and PID files are stored in `$READING_SERVICE_HOME/logs` and `$READING_SERV
 
 ## Current Scope
 
-- Upload a `.docx`; the worker renders a fixed PDF, page PNGs, page-level raw/normalized text, and a checklist.
-- Review page images and normalized text, provide the exact voice transcript, and approve each audio/video stage.
+- Upload a Word/WPS-exported `.pdf`; the worker renders page PNGs and extracts page-level raw/normalized text from that same PDF, plus a checklist. TTS page breaks move to the nearest sentence/clause ending so F5 does not restart mid-sentence; some spoken text can therefore be assigned to an adjacent PDF page for timing. DOCX upload is not supported because server-side reflow cannot guarantee Word pagination or fonts.
+- Review page images and normalized text, provide the exact voice transcript, and approve each audio/video stage. TTS text remains editable whenever the book has no active job.
+- If audio already exists, saving edited TTS text automatically queues a preview/full audio update. Existing chunk WAVs are reused when their text and pause match; changed chunk positions are re-synthesized and the audiobook is rebuilt. Old audio/video artifacts remain in history but are marked stale; video must be regenerated and reviewed again.
+- TTS normalization strips quotation glyphs and Markdown bold markers while preserving the quoted words and sentence punctuation, and converts common dates, ranges, percentages, counts, ages, and centuries to Chinese spoken forms. Figure/table captions are excluded by default but are listed in review and can be added to their page's TTS text; the original PDF remains the layout reference.
 - Generate the first five complete pages as audio and video before generating final full-book media.
 - Book state, immutable artifact versions, SHA-256 values, jobs, and approval events are stored in SQLite.
 - Redis/RQ runs background jobs. Run exactly one `rq worker reading` process to keep GPU inference sequential.
 
-DOCX conversion requires LibreOffice, image rendering requires PyMuPDF, and PDF text extraction requires `pypdf`. The DOCX renderer uses the page layout produced by LibreOffice, which can differ from Microsoft Word if fonts or pagination settings differ.
+Image rendering requires PyMuPDF, and PDF text extraction requires `pypdf`. The uploaded PDF is the layout authority; text extraction quality may vary for scanned PDFs or PDFs with unusual text encoding, and the review screen allows manual correction.
