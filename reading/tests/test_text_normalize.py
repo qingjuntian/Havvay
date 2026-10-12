@@ -27,6 +27,14 @@ class TextNormalizationTests(unittest.TestCase):
 
         self.assertEqual(normalize_text(text), "The service began in 二零一二年.\n\nHe was 二十八岁.")
 
+    def test_preserves_heading_paragraph_breaks_but_removes_single_line_wraps(self) -> None:
+        text = "（一）服务对象层面的目标\n\n一、缓解生活困难\n社会工作服务的目标。"
+
+        self.assertEqual(
+            normalize_text(text),
+            "（一）服务对象层面的目标\n\n一、缓解生活困难社会工作服务的目标。",
+        )
+
     def test_removes_quote_glyphs_and_markdown_bold_without_losing_words(self) -> None:
         extracted = '**“ ”\n社会建设是党中央 五位一体 总体布局的重要组成部分**'
 
@@ -38,7 +46,7 @@ class TextNormalizationTests(unittest.TestCase):
     def test_removes_quote_styles_but_preserves_sentence_punctuation(self) -> None:
         text = "他说‘社会工作’很重要。《病理学》也会说：‘注意观察！’"
 
-        self.assertEqual(normalize_text(text), "他说社会工作很重要。病理学也会说：注意观察！")
+        self.assertEqual(normalize_text(text), "他说社会工作很重要。《病理学》也会说：注意观察！")
 
     def test_removes_quotes_split_across_extracted_lines(self) -> None:
         self.assertEqual(normalize_text("人民幸福安\n” “ ”康。"), "人民幸福安康。")

@@ -28,6 +28,7 @@ import time
 import subprocess
 import argparse
 import json
+import hashlib
 from pathlib import Path
 
 # ----------------------------- CONFIG -----------------------------
@@ -40,10 +41,11 @@ OUTPUT_DIR      = "output/f5"
 MAX_CHARS       = 100              # hard cap for one sentence or clause chunk
 SENTENCE_PAUSE  = 0.30
 PARAGRAPH_PAUSE = 0.65
+PAGE_PAUSE      = 0.0
 TEST_LIMIT      = 0                 # 0 = whole book; N>0 = first N chunks (smoke test)
 MAKE_MP3        = True
 NFE_STEP        = 32               # denoising steps: higher = better/slower (16 is ~2x faster, lower quality)
-SPEED           = 1.2
+SPEED           = 1.0
 # ------------------------------------------------------------------
 
 SAMPLE_RATE = 24000
@@ -62,7 +64,7 @@ BOOK_FILE = _resolve(BOOK_FILE)
 REFERENCE_AUDIO = _resolve(REFERENCE_AUDIO)
 OUTPUT_DIR = _resolve(OUTPUT_DIR)
 CHUNK_DIR = os.path.join(OUTPUT_DIR, "chunks")
-AUDIO_SIGNATURE = f"ref={REFERENCE_AUDIO}|nfe={NFE_STEP}|speed={SPEED}|chars={MAX_CHARS}"
+AUDIO_SIGNATURE = f"ref={REFERENCE_AUDIO}|nfe={NFE_STEP}|speed={SPEED}|chars={MAX_CHARS}|page_pause={PAGE_PAUSE}"
 
 # Static ffmpeg on PATH (for Whisper/pydub) + a full-path exe for the concat (avoids AV issues).
 _FFMPEG_BIN = r"C:\Program Files\ffmpeg-master-latest-win64-gpl\bin"
@@ -117,7 +119,7 @@ def split_long(sentence: str, max_chars: int):
     return pieces
 
 
-def build_chunks(text: str):
+def build_chunks(text: str, page_pause: float = 0.0):
     chunks = []
     pages = text.split(PAGE_BREAK_TOKEN)
     for page_index, page_text in enumerate(pages):
@@ -136,8 +138,8 @@ def build_chunks(text: str):
                 page_chunks.append((chunk_text, PARAGRAPH_PAUSE if i == len(para_chunks) - 1 else SENTENCE_PAUSE))
         if page_chunks and page_index < len(pages) - 1:
             last_text, last_pause = page_chunks[-1]
-            if not HEADING_RE.match(last_text):
-                page_chunks[-1] = (last_text, 0.0)
+            if page_pause > 0 or not HEADING_RE.match(last_text):
+                page_chunks[-1] = (last_text, page_pause)
         chunks.extend(page_chunks)
     return chunks
 
@@ -194,7 +196,7 @@ def concat_audio(chunk_paths):
 # ----------------------------- MAIN -----------------------------
 def main():
     global BOOK_FILE, REFERENCE_AUDIO, REF_TEXT, OUTPUT_DIR, CHUNK_DIR
-    global MAX_CHARS, TEST_LIMIT, MAKE_MP3, NFE_STEP, SPEED, AUDIO_SIGNATURE
+    global MAX_CHARS, TEST_LIMIT, MAKE_MP3, NFE_STEP, SPEED, PAGE_PAUSE, AUDIO_SIGNATURE
     parser = argparse.ArgumentParser(description="Generate cloned-voice audio chunks with F5-TTS.")
     parser.add_argument("--book", default=BOOK_FILE, help="Normalized UTF-8 book text")
     parser.add_argument("--reference-audio", default=REFERENCE_AUDIO)
@@ -204,10 +206,12 @@ def main():
     parser.add_argument("--speed", type=float, default=SPEED)
     parser.add_argument("--nfe-step", type=int, default=NFE_STEP)
     parser.add_argument("--max-chars", type=int, default=MAX_CHARS)
+    parser.add_argument("--page-pause", type=float, default=PAGE_PAUSE, help="Silence after each page, in seconds")
     parser.add_argument("--test-limit", type=int, default=TEST_LIMIT, help="0 means all chunks")
     parser.add_argument("--no-mp3", action="store_true")
     parser.add_argument("--rerender-chunks", default="", help="Chunk numbers/ranges to regenerate, e.g. 22,41-43")
     parser.add_argument("--chunk-overrides", default=None, help="JSON mapping chunk number to replacement text")
+    parser.add_argument("--pronunciation-dict", default=None, help="JSON phrase-to-numbered-pinyin dictionary")
     args = parser.parse_args()
 
     BOOK_FILE = _resolve(args.book)
@@ -223,7 +227,21 @@ def main():
     MAKE_MP3 = not args.no_mp3
     NFE_STEP = args.nfe_step
     SPEED = args.speed
-    AUDIO_SIGNATURE = f"ref={REFERENCE_AUDIO}|ref_text={REF_TEXT}|nfe={NFE_STEP}|speed={SPEED}|chars={MAX_CHARS}"
+    PAGE_PAUSE = args.page_pause
+    AUDIO_SIGNATURE = f"ref={REFERENCE_AUDIO}|ref_text={REF_TEXT}|nfe={NFE_STEP}|speed={SPEED}|chars={MAX_CHARS}|page_pause={PAGE_PAUSE}"
+    if args.pronunciation_dict:
+        sys.path.insert(0, ROOT)
+        from src.pronunciation import pypinyin_phrases, read_pronunciation_file
+
+        pronunciation_entries = read_pronunciation_file(Path(_resolve(args.pronunciation_dict)))
+        if pronunciation_entries:
+            from pypinyin import load_phrases_dict
+
+            load_phrases_dict(pypinyin_phrases(pronunciation_entries), style="tone2")
+            pronunciation_hash = hashlib.sha256(
+                json.dumps(pronunciation_entries, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+            AUDIO_SIGNATURE += f"|pronunciation={pronunciation_hash}"
 
     def selected_chunks(spec: str) -> set[int]:
         selected = set()
@@ -246,7 +264,7 @@ def main():
     with open(BOOK_FILE, "r", encoding="utf-8") as f:
         text = f.read()
 
-    chunks = build_chunks(text)
+    chunks = build_chunks(text, page_pause=args.page_pause)
     if not chunks:
         sys.exit(f"[error] no text found in {BOOK_FILE}.")
     chars = sum(len(c) for c, _ in chunks)

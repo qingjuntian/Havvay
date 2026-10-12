@@ -25,7 +25,7 @@ def main() -> None:
     parser.add_argument("--ref-text", required=True, help="Exact transcript of the retained reference speech")
     parser.add_argument("--f5-python", default=sys.executable, help="Python executable with F5-TTS installed")
     parser.add_argument("--work-dir", default="output/book_build")
-    parser.add_argument("--speed", type=float, default=1.2)
+    parser.add_argument("--speed", type=float, default=1.0)
     parser.add_argument("--nfe-step", type=int, default=32)
     parser.add_argument("--max-chars", type=int, default=100)
     parser.add_argument("--test-limit", type=int, default=0)

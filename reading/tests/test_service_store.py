@@ -204,6 +204,38 @@ class ServiceStoreTests(unittest.TestCase):
         self.assertTrue(by_kind[("final_audio_review", "audiobook_mp3")]["stale"])
         self.assertTrue(by_kind[("final_video_review", "video_mp4")]["stale"])
 
+    def test_voice_reference_replacement_invalidates_reference_and_all_downstream_media(self) -> None:
+        artifact_dir = store.book_directory(self.book_id) / "artifacts"
+        artifact_dir.mkdir(parents=True)
+        artifacts = [
+            ("reference_input", "voice_sample", "voice.wav"),
+            ("reference_input", "ref_text", "ref.txt"),
+            ("reference_review", "processed_audio", "processed.wav"),
+            ("preview_audio_review", "audiobook_mp3", "preview.mp3"),
+            ("preview_video_review", "video_mp4", "preview.mp4"),
+            ("final_audio_review", "audiobook_mp3", "final.mp3"),
+            ("final_video_review", "video_mp4", "final.mp4"),
+            ("text", "normalized_text", "book.txt"),
+        ]
+        for stage, kind, filename in artifacts:
+            path = artifact_dir / filename
+            path.write_bytes(b"artifact")
+            store.add_artifact(self.book_id, stage, kind, path, filename, "application/octet-stream")
+
+        invalidated = store.invalidate_reference_dependent_artifacts(self.book_id, "Voice reference replaced")
+        book = store.get_book(self.book_id)
+        assert book is not None
+        by_kind = {(item["stage"], item["kind"]): item for item in book["artifacts"]}
+
+        self.assertEqual(invalidated, 7)
+        self.assertTrue(by_kind[("reference_input", "voice_sample")]["stale"])
+        self.assertTrue(by_kind[("reference_review", "processed_audio")]["stale"])
+        self.assertTrue(by_kind[("preview_audio_review", "audiobook_mp3")]["stale"])
+        self.assertTrue(by_kind[("preview_video_review", "video_mp4")]["stale"])
+        self.assertTrue(by_kind[("final_audio_review", "audiobook_mp3")]["stale"])
+        self.assertTrue(by_kind[("final_video_review", "video_mp4")]["stale"])
+        self.assertFalse(by_kind[("text", "normalized_text")]["stale"])
+
     def test_changed_chunk_numbers_only_selects_changed_text_or_pause(self) -> None:
         previous = [("unchanged", 0.3), ("edited", 0.3), ("same text", 0.3)]
         current = [("unchanged", 0.3), ("edited version", 0.3), ("same text", 0.6), ("new", 0.3)]

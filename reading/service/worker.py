@@ -165,6 +165,12 @@ def _synthesize_audio(job_id: str, page_limit: int | None = None) -> str:
     if book is None:
         raise ValueError(f"Unknown book: {book_id}")
     stage = job["stage"]
+    pronunciation_artifacts = [
+        item for item in book["artifacts"]
+        if item["stage"] == "pronunciation" and item["kind"] == "pronunciation_dict" and not item.get("stale")
+    ]
+    pronunciation_artifact = max(pronunciation_artifacts, key=lambda item: item["version"], default=None)
+    pronunciation_version = pronunciation_artifact["version"] if pronunciation_artifact else 0
     update_existing = stage.endswith("_update")
     audio_kind = stage.removesuffix("_update")
     if audio_kind not in {"preview_audio", "full_audio"}:
@@ -199,6 +205,11 @@ def _synthesize_audio(job_id: str, page_limit: int | None = None) -> str:
     wav_path = f5_dir / "audiobook.wav"
     f5_python = os.environ.get("READING_F5_PYTHON", sys.executable)
     max_chars = int(os.environ.get("READING_F5_MAX_CHARS", "100"))
+    is_image_book = any(
+        item["stage"] == "input" and item["kind"] == "source_page_texts"
+        for item in book["artifacts"]
+    )
+    page_pause = float(os.environ.get("READING_IMAGE_PAGE_PAUSE", "1.5")) if is_image_book else 0.0
     rerender_chunks: list[int] = []
     if update_existing:
         review_stage = "final_audio_review" if audio_kind == "full_audio" else "preview_audio_review"
@@ -225,7 +236,9 @@ def _synthesize_audio(job_id: str, page_limit: int | None = None) -> str:
         current_pages = text_path.read_text(encoding="utf-8").split(PAGE_BREAK_TOKEN)
         if page_limit is not None:
             current_pages = current_pages[:page_limit]
-        current_chunks = f5_script.build_chunks(f"\n\n{PAGE_BREAK_TOKEN}\n\n".join(current_pages))
+        current_chunks = f5_script.build_chunks(
+            f"\n\n{PAGE_BREAK_TOKEN}\n\n".join(current_pages), page_pause=page_pause
+        )
         if previous_text_artifact is None:
             rerender_chunks = list(range(1, len(current_chunks) + 1))
         else:
@@ -233,18 +246,23 @@ def _synthesize_audio(job_id: str, page_limit: int | None = None) -> str:
             previous_pages = previous_text.split(PAGE_BREAK_TOKEN)
             if page_limit is not None:
                 previous_pages = previous_pages[:page_limit]
-            previous_chunks = f5_script.build_chunks(f"\n\n{PAGE_BREAK_TOKEN}\n\n".join(previous_pages))
+            previous_chunks = f5_script.build_chunks(
+                f"\n\n{PAGE_BREAK_TOKEN}\n\n".join(previous_pages), page_pause=page_pause
+            )
             rerender_chunks = changed_chunk_numbers(previous_chunks, current_chunks)
 
     command = [
         f5_python, str(ROOT / "src/narrate_book_f5.py"),
         "--book", str(text_path), "--reference-audio", str(reference_audio),
         "--reference-text-file", str(reference_text), "--output-dir", str(f5_dir),
-        "--speed", os.environ.get("READING_F5_SPEED", "1.2"),
+        "--speed", os.environ.get("READING_F5_SPEED", "1.0"),
         "--nfe-step", os.environ.get("READING_F5_NFE_STEP", "32"),
         "--max-chars", str(max_chars),
+        "--page-pause", str(page_pause),
         "--test-limit", "0",
     ]
+    if pronunciation_artifact is not None:
+        command += ["--pronunciation-dict", str(_artifact_path(pronunciation_artifact))]
     if rerender_chunks:
         command += ["--rerender-chunks", ",".join(map(str, rerender_chunks))]
     resulting_stage, resulting_status = (
@@ -255,9 +273,9 @@ def _synthesize_audio(job_id: str, page_limit: int | None = None) -> str:
     return _run_stage(
         job_id, book_id, stage, output_dir, [command],
         [
-            ("audiobook_mp3", audio_path, "audio/mpeg", {"page_count": len(page_records), "text_version": current_text_version if update_existing else text_artifact_version(book)}),
-            ("audiobook_wav", wav_path, "audio/wav", {"page_count": len(page_records), "text_version": current_text_version if update_existing else text_artifact_version(book)}),
-            ("page_metadata", pages_path, "application/json", {"page_count": len(page_records), "text_version": current_text_version if update_existing else text_artifact_version(book)}),
+            ("audiobook_mp3", audio_path, "audio/mpeg", {"page_count": len(page_records), "text_version": current_text_version if update_existing else text_artifact_version(book), "pronunciation_version": pronunciation_version}),
+            ("audiobook_wav", wav_path, "audio/wav", {"page_count": len(page_records), "text_version": current_text_version if update_existing else text_artifact_version(book), "pronunciation_version": pronunciation_version}),
+            ("page_metadata", pages_path, "application/json", {"page_count": len(page_records), "text_version": current_text_version if update_existing else text_artifact_version(book), "pronunciation_version": pronunciation_version}),
         ],
         resulting_stage, resulting_status,
     )
@@ -405,11 +423,15 @@ def prepare_document(job_id: str) -> str:
             raise RuntimeError(result.stderr.strip() or result.stdout.strip() or f"Exit code {result.returncode}")
 
         store.update_job(job_id, "running", progress=0.8)
+        page_count = len(json.loads(pages_path.read_text(encoding="utf-8"))["pages"])
         metadata = {"job_id": job_id}
         store.add_artifact(book_id, "pages", "rendered_pdf", pdf_path, _sha256(pdf_path), "application/pdf", metadata)
         store.add_artifact(book_id, "pages", "page_metadata", pages_path, _sha256(pages_path), "application/json", metadata)
         store.add_artifact(book_id, "pages", "checklist", checklist_path, _sha256(checklist_path), "application/json", metadata)
-        store.add_artifact(book_id, "text", "normalized_text", text_path, _sha256(text_path), "text/plain; charset=utf-8", metadata)
+        store.add_artifact(
+            book_id, "text", "normalized_text", text_path, _sha256(text_path), "text/plain; charset=utf-8",
+            {**metadata, "confirmed_pages": list(range(1, page_count + 1))},
+        )
         for image_path in sorted(images_dir.glob("page_*.png")):
             page_number = int(image_path.stem.split("_")[-1])
             store.add_artifact(
@@ -419,7 +441,7 @@ def prepare_document(job_id: str) -> str:
             )
         store.add_artifact(book_id, "document", "log", log_path, _sha256(log_path), "text/plain; charset=utf-8", metadata)
         store.add_event(book_id, "pages", "prepared", note=f"Rendered {len(list(images_dir.glob('page_*.png')))} pages")
-        store.set_book_state(book_id, "pages_review", "awaiting_page_review")
+        store.set_book_state(book_id, "reference", "awaiting_reference")
         store.update_job(job_id, "completed", progress=1)
         return f"Prepared document for book {book_id}"
     except Exception as exc:
@@ -459,7 +481,10 @@ def prepare_image_book(job_id: str) -> str:
         metadata = {"job_id": job_id, "source": "user_images"}
         store.add_artifact(book_id, "pages", "page_metadata", pages_path, _sha256(pages_path), "application/json", metadata)
         store.add_artifact(book_id, "pages", "checklist", checklist_path, _sha256(checklist_path), "application/json", metadata)
-        store.add_artifact(book_id, "text", "normalized_text", text_path, _sha256(text_path), "text/plain; charset=utf-8", metadata)
+        store.add_artifact(
+            book_id, "text", "normalized_text", text_path, _sha256(text_path), "text/plain; charset=utf-8",
+            {**metadata, "confirmed_pages": list(range(1, len(page_records) + 1))},
+        )
         for page_number, page in enumerate(page_records, 1):
             image_path = output_dir / "pages" / f"page_{page_number:04d}.png"
             store.add_artifact(
@@ -469,7 +494,7 @@ def prepare_image_book(job_id: str) -> str:
         log_path.write_text(f"Prepared {len(page_records)} user-provided image/text pages\n", encoding="utf-8")
         store.add_artifact(book_id, "document", "log", log_path, _sha256(log_path), "text/plain; charset=utf-8", metadata)
         store.add_event(book_id, "pages", "prepared", note=f"Prepared {len(page_records)} user-provided image/text pages")
-        store.set_book_state(book_id, "pages_review", "awaiting_page_review")
+        store.set_book_state(book_id, "reference", "awaiting_reference")
         store.update_job(job_id, "completed", progress=1)
         return f"Prepared image pages for book {book_id}"
     except Exception as exc:

@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
 from service import store
+from src.pronunciation import validate_pronunciation_entries
 from src.text_normalize import match_text, normalize_text
 
 MAX_UPLOAD_BYTES = int(os.environ.get("READING_MAX_UPLOAD_BYTES", str(200 * 1024 * 1024)))
@@ -25,6 +26,15 @@ app = FastAPI(title="Reading Audiobook Service", version="0.1.0")
 
 class TextUpdate(BaseModel):
     text: str
+    confirmed_pages: list[int] | None = None
+
+
+class PageTextUpdate(BaseModel):
+    text: str
+
+
+class PronunciationUpdate(BaseModel):
+    entries: dict[str, str]
 
 
 class Approval(BaseModel):
@@ -397,8 +407,48 @@ async def upload_reference(
     book = store.get_book(book_id)
     if book is None:
         raise HTTPException(status_code=404, detail="Book not found")
-    if book["current_stage"] != "reference" or book["status"] != "awaiting_reference":
-        raise HTTPException(status_code=409, detail="Approve the TTS text before uploading a voice reference")
+    if store.count_active_jobs(book_id):
+        raise HTTPException(status_code=409, detail="Wait for the current processing task to finish before uploading the voice reference")
+    existing_reference = any(
+        item["stage"] == "reference_input" and item["kind"] == "voice_sample" and not item.get("stale")
+        for item in book["artifacts"]
+    )
+    if book["current_stage"] in {"pages_review", "text_review"} and book["status"] in {
+        "awaiting_page_review", "awaiting_text_review",
+    }:
+        text_artifacts = [
+            item for item in book["artifacts"]
+            if item["stage"] == "text" and item["kind"] == "normalized_text" and not item.get("stale")
+        ]
+        page_artifacts = [
+            item for item in book["artifacts"]
+            if item["stage"] == "pages" and item["kind"] == "page_metadata" and not item.get("stale")
+        ]
+        if not text_artifacts or not page_artifacts:
+            raise HTTPException(status_code=409, detail="Page text is not ready for confirmation")
+        latest_text = max(text_artifacts, key=lambda item: item["version"])
+        latest_pages = max(page_artifacts, key=lambda item: item["version"])
+        home = store.service_home().resolve()
+        text_path = (home / latest_text["path"]).resolve()
+        pages_path = (home / latest_pages["path"]).resolve()
+        text_path.relative_to(home)
+        pages_path.relative_to(home)
+        page_count = len(json.loads(pages_path.read_text(encoding="utf-8"))["pages"])
+        update_text(
+            book_id,
+            TextUpdate(
+                text=text_path.read_text(encoding="utf-8"),
+                confirmed_pages=list(range(1, page_count + 1)),
+            ),
+        )
+        book = store.get_book(book_id)
+        assert book is not None
+    awaiting_first_reference = book["current_stage"] == "reference" and book["status"] == "awaiting_reference"
+    replacing_reference = existing_reference and book["current_stage"] not in {
+        "document", "pages_review", "text_review",
+    }
+    if not awaiting_first_reference and not replacing_reference:
+        raise HTTPException(status_code=409, detail="Page text must be ready before uploading a voice reference")
     if not ref_text.strip():
         raise HTTPException(status_code=400, detail="REF_TEXT must match the spoken words in the recording")
     filename = Path(voice.filename or "voice.wav").name
@@ -428,6 +478,14 @@ async def upload_reference(
 
     transcript_path = input_dir / f"ref_text_{uuid.uuid4().hex}.txt"
     transcript_path.write_text(ref_text.strip() + "\n", encoding="utf-8")
+    if replacing_reference:
+        invalidated = store.invalidate_reference_dependent_artifacts(
+            book_id, "Voice reference replaced",
+        )
+        store.add_event(
+            book_id, "reference_input", "replaced", "user",
+            f"Replaced voice reference; invalidated {invalidated} dependent artifacts",
+        )
     store.add_artifact(
         book_id, "reference_input", "voice_sample", audio_path, _sha256(audio_path),
         voice.content_type or "application/octet-stream", {"original_filename": filename, "bytes": written},
@@ -437,8 +495,12 @@ async def upload_reference(
         "text/plain; charset=utf-8", {"characters": len(ref_text.strip())},
     )
     store.add_event(book_id, "reference_input", "uploaded", "user", "Voice sample and REF_TEXT uploaded")
-    job = _enqueue_job(book_id, "reference_preparation", "service.worker.prepare_reference")
-    return {"id": book_id, "status": job["status"], "job": job}
+    store.set_book_state(book_id, "reference_preparation", "ready")
+    return {
+        "id": book_id,
+        "status": "ready",
+        "regeneration": {"status": "pending", "stage": "reference_preparation"},
+    }
 
 
 @app.get("/api/books/{book_id}")
@@ -528,16 +590,25 @@ async def replace_page_image(book_id: str, page_number: int, image: UploadFile =
             f"Replaced page {page_number}; invalidated {invalidated_count} video artifacts",
             page_version,
         )
-        if store.has_valid_artifact(book_id, "audiobook_mp3", ("final_audio_review",)):
-            store.set_book_state(book_id, "full_video", "ready")
-        elif store.has_valid_artifact(book_id, "audiobook_mp3", ("preview_audio_review",)):
-            store.set_book_state(book_id, "preview_video", "ready")
-        else:
-            store.set_book_state(book_id, "pages_review", "awaiting_page_review")
+        pending_audio_update = (
+            book["current_stage"] in {"preview_audio_update", "full_audio_update"}
+            and book["status"] == "ready"
+        )
+        if not pending_audio_update:
+            if store.has_valid_artifact(book_id, "audiobook_mp3", ("final_audio_review",)):
+                store.set_book_state(book_id, "full_video", "ready")
+            elif store.has_valid_artifact(book_id, "audiobook_mp3", ("preview_audio_review",)):
+                store.set_book_state(book_id, "preview_video", "ready")
+            else:
+                store.set_book_state(book_id, "pages_review", "awaiting_page_review")
     except Exception:
         image_path.unlink(missing_ok=True)
         raise
-    return {**artifact, "invalidated_video_artifacts": invalidated_count}
+    return {
+        **artifact,
+        "invalidated_video_artifacts": invalidated_count,
+        "regeneration": {"status": "pending", "stage": "video"},
+    }
 
 
 @app.delete("/api/books/{book_id}")
@@ -568,6 +639,7 @@ def update_text(book_id: str, update: TextUpdate) -> dict:
         raise HTTPException(status_code=400, detail="Text cannot be empty")
     if len(normalized_text) > 2_000_000:
         raise HTTPException(status_code=413, detail="Text exceeds the 2 MB limit")
+    page_count: int | None = None
     page_artifacts = [
         item for item in book["artifacts"] if item["stage"] == "pages" and item["kind"] == "page_metadata"
     ]
@@ -583,11 +655,44 @@ def update_text(book_id: str, update: TextUpdate) -> dict:
         key=lambda item: item["version"],
         default=None,
     )
+    previously_confirmed: set[int] = set()
     if latest_text_artifact is not None:
         previous_text_path = (store.service_home() / latest_text_artifact["path"]).resolve()
         previous_text_path.relative_to(store.service_home().resolve())
-        if previous_text_path.is_file() and previous_text_path.read_text(encoding="utf-8") == normalized_text:
-            return {**latest_text_artifact, "unchanged": True, "regeneration": None}
+        previously_confirmed = set(latest_text_artifact.get("metadata", {}).get("confirmed_pages", []))
+
+    if page_count is None:
+        confirmed_pages = []
+    elif update.confirmed_pages is None:
+        confirmed_pages = set(range(1, page_count + 1))
+    else:
+        invalid_pages = [page for page in update.confirmed_pages if page < 1 or page > page_count]
+        if invalid_pages:
+            raise HTTPException(status_code=400, detail="Confirmed page numbers must be within the book's page range")
+        confirmed_pages = previously_confirmed | set(update.confirmed_pages)
+
+    previous_text = None
+    if latest_text_artifact is not None and previous_text_path.is_file():
+        previous_text = normalize_text(previous_text_path.read_text(encoding="utf-8"))
+    text_changed = previous_text != normalized_text
+    confirmation_changed = confirmed_pages != previously_confirmed
+    if not text_changed and not confirmation_changed:
+        all_pages_confirmed = page_count is None or len(confirmed_pages) == page_count
+        if all_pages_confirmed and book["current_stage"] in {"pages_review", "text_review"}:
+            next_stage, next_status = (
+                ("preview_audio", "ready")
+                if store.has_valid_artifact(book_id, "processed_audio", ("reference_review",))
+                else ("reference", "awaiting_reference")
+            )
+            store.set_book_state(book_id, next_stage, next_status)
+        return {
+            **latest_text_artifact,
+            "unchanged": True,
+            "regeneration": None,
+            "confirmed_page_count": len(confirmed_pages),
+            "page_count": page_count,
+            "review_complete": all_pages_confirmed,
+        }
 
     final_audio_exists = any(
         item["kind"] == "audiobook_mp3" and item["stage"] == "final_audio_review"
@@ -608,24 +713,146 @@ def update_text(book_id: str, update: TextUpdate) -> dict:
     output_path.write_text(normalized_text, encoding="utf-8")
     artifact = store.add_artifact(
         book_id, "text", "normalized_text", output_path, _sha256(output_path), "text/plain; charset=utf-8",
-        {"edited_by_user": True},
+        {"edited_by_user": text_changed, "confirmed_pages": sorted(confirmed_pages)},
     )
-    invalidated_count = store.invalidate_text_dependent_artifacts(book_id, f"TTS text changed to version {version}")
-    store.add_event(book_id, "text", "text_edited", "user", "Normalized TTS text updated", version)
+    invalidated_count = 0
+    if text_changed:
+        invalidated_count = store.invalidate_text_dependent_artifacts(book_id, f"TTS text changed to version {version}")
+        store.add_event(book_id, "text", "text_edited", "user", "Normalized TTS text updated", version)
+        store.add_event(
+            book_id, "text", "downstream_invalidated", "system",
+            f"Invalidated {invalidated_count} audio/video artifacts derived from the previous text", version,
+        )
+    if update.confirmed_pages is not None:
+        store.add_event(
+            book_id, "text", "page_text_saved", "user",
+            f"Saved page text; confirmed {len(confirmed_pages)} of {page_count} pages", version,
+        )
+
+    all_pages_confirmed = page_count is None or len(confirmed_pages) == page_count
+    if not all_pages_confirmed:
+        next_stage, next_status = "pages_review", "awaiting_page_review"
+    else:
+        if store.has_valid_artifact(book_id, "processed_audio", ("reference_review",)):
+            if text_changed and final_audio_exists:
+                next_stage, next_status = "full_audio_update", "ready"
+            elif text_changed and preview_audio_exists:
+                next_stage, next_status = "preview_audio_update", "ready"
+            else:
+                next_stage, next_status = "preview_audio", "ready"
+        else:
+            next_stage, next_status = "reference", "awaiting_reference"
+    store.set_book_state(book_id, next_stage, next_status)
+    return {
+        **artifact,
+        "invalidated_artifacts": invalidated_count,
+        "regeneration": None,
+        "text_changed": text_changed,
+        "confirmed_page_count": len(confirmed_pages),
+        "page_count": page_count,
+        "review_complete": all_pages_confirmed,
+    }
+
+
+@app.put("/api/books/{book_id}/pages/{page_number}/text")
+def update_page_text(book_id: str, page_number: int, update: PageTextUpdate) -> dict:
+    if page_number < 1:
+        raise HTTPException(status_code=400, detail="Page number must be positive")
+    if not normalize_text(update.text).strip():
+        raise HTTPException(status_code=400, detail="Page text cannot be empty")
+    book = store.get_book(book_id)
+    if book is None:
+        raise HTTPException(status_code=404, detail="Book not found")
+    text_artifact = max(
+        (item for item in book["artifacts"] if item["stage"] == "text" and item["kind"] == "normalized_text" and not item.get("stale")),
+        key=lambda item: item["version"],
+        default=None,
+    )
+    if text_artifact is None:
+        raise HTTPException(status_code=409, detail="Page text is not ready yet")
+    text_path = (store.service_home() / text_artifact["path"]).resolve()
+    text_path.relative_to(store.service_home().resolve())
+    page_texts = text_path.read_text(encoding="utf-8").split(store.PAGE_BREAK_TOKEN)
+    if page_number > len(page_texts):
+        raise HTTPException(status_code=404, detail=f"Page {page_number} does not exist")
+    page_texts[page_number - 1] = update.text
+    result = update_text(
+        book_id,
+        TextUpdate(text=f"\n\n{store.PAGE_BREAK_TOKEN}\n\n".join(page_texts), confirmed_pages=[page_number]),
+    )
+    return result
+
+
+@app.put("/api/books/{book_id}/pronunciations")
+def update_pronunciations(book_id: str, update: PronunciationUpdate) -> dict:
+    book = store.get_book(book_id)
+    if book is None:
+        raise HTTPException(status_code=404, detail="Book not found")
+    if store.count_active_jobs(book_id):
+        raise HTTPException(status_code=409, detail="Wait for the current processing task to finish before editing pronunciations")
+    try:
+        entries = validate_pronunciation_entries(update.entries)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    previous_artifacts = [
+        item for item in book["artifacts"]
+        if item["stage"] == "pronunciation" and item["kind"] == "pronunciation_dict"
+    ]
+    previous = max(previous_artifacts, key=lambda item: item["version"], default=None)
+    if previous is not None:
+        previous_path = (store.service_home() / previous["path"]).resolve()
+        previous_path.relative_to(store.service_home().resolve())
+        previous_entries = validate_pronunciation_entries(json.loads(previous_path.read_text(encoding="utf-8")))
+        if entries == previous_entries:
+            return {**previous, "unchanged": True, "invalidated_artifacts": 0}
+
+    version = max((item["version"] for item in previous_artifacts), default=0) + 1
+    output_path = store.book_directory(book_id) / "artifacts" / "pronunciation" / f"v{version}" / "pronunciations.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(entries, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    artifact = store.add_artifact(
+        book_id, "pronunciation", "pronunciation_dict", output_path, _sha256(output_path),
+        "application/json", {"entry_count": len(entries)},
+    )
+    invalidated_count = store.invalidate_text_dependent_artifacts(book_id, f"Pronunciation dictionary changed to version {version}")
     store.add_event(
-        book_id, "text", "downstream_invalidated", "system",
-        f"Invalidated {invalidated_count} audio/video artifacts derived from the previous text", version,
+        book_id, "pronunciation", "pronunciation_dict_updated", "user",
+        f"Saved {len(entries)} pronunciation entries; invalidated {invalidated_count} derived media artifacts",
+        version,
     )
 
-    if final_audio_exists or preview_audio_exists:
-        audio_kind = "full_audio" if final_audio_exists else "preview_audio"
-        update_stage = f"{audio_kind}_update"
-        task_name = "service.worker.synthesize_full_audio_update" if final_audio_exists else "service.worker.synthesize_preview_audio_update"
-        queued_job = _enqueue_job(book_id, update_stage, task_name)
-        return {**artifact, "invalidated_artifacts": invalidated_count, "regeneration": queued_job}
+    text_artifacts = [
+        item for item in book["artifacts"]
+        if item["stage"] == "text" and item["kind"] == "normalized_text" and not item.get("stale")
+    ]
+    confirmed_pages = max(text_artifacts, key=lambda item: item["version"], default={}).get("metadata", {}).get("confirmed_pages")
+    pages_artifacts = [
+        item for item in book["artifacts"]
+        if item["stage"] == "pages" and item["kind"] == "page_metadata" and not item.get("stale")
+    ]
+    if confirmed_pages is not None and pages_artifacts:
+        home = store.service_home().resolve()
+        pages_path = (home / max(pages_artifacts, key=lambda item: item["version"])["path"]).resolve()
+        pages_path.relative_to(home)
+        page_count = len(json.loads(pages_path.read_text(encoding="utf-8"))["pages"])
+        if len(confirmed_pages) == page_count:
+            has_full_audio = any(
+                item["stage"] == "final_audio_review" and item["kind"] == "audiobook_mp3"
+                for item in book["artifacts"]
+            )
+            has_preview_audio = any(
+                item["stage"] == "preview_audio_review" and item["kind"] == "audiobook_mp3"
+                for item in book["artifacts"]
+            )
+            if has_full_audio:
+                store.set_book_state(book_id, "full_audio_update", "ready")
+            elif has_preview_audio:
+                store.set_book_state(book_id, "preview_audio_update", "ready")
+            elif store.has_valid_artifact(book_id, "processed_audio", ("reference_review",)):
+                store.set_book_state(book_id, "preview_audio", "ready")
 
-    store.set_book_state(book_id, "text_review", "awaiting_text_review")
-    return {**artifact, "invalidated_artifacts": invalidated_count, "regeneration": None}
+    return {**artifact, "unchanged": False, "invalidated_artifacts": invalidated_count}
 
 
 @app.post("/api/books/{book_id}/approve")
@@ -718,6 +945,123 @@ def start_stage_job(book_id: str, stage: str) -> dict:
     if book["current_stage"] != expected_stage or book["status"] not in statuses:
         raise HTTPException(status_code=409, detail="This generation stage is not ready to start")
     return _enqueue_job(book_id, stage, task_name)
+
+
+@app.post("/api/books/{book_id}/regenerate")
+def regenerate_book(book_id: str) -> dict:
+    book = store.get_book(book_id)
+    if book is None:
+        raise HTTPException(status_code=404, detail="Book not found")
+    if store.count_active_jobs(book_id):
+        raise HTTPException(status_code=409, detail="Wait for the current processing task to finish")
+
+    ready_stages = {
+        "reference_preparation", "preview_audio", "preview_audio_update",
+        "preview_video", "full_audio_update", "full_video",
+    }
+    if book["current_stage"] not in ready_stages or book["status"] != "ready":
+        raise HTTPException(status_code=409, detail="There are no saved changes ready to regenerate")
+
+    reference_inputs = [
+        item for item in book["artifacts"]
+        if item["stage"] == "reference_input" and item["kind"] == "voice_sample" and not item.get("stale")
+    ]
+    if not reference_inputs:
+        raise HTTPException(status_code=409, detail="Upload a voice reference before generating audio")
+
+    if not store.has_valid_artifact(book_id, "processed_audio", ("reference_review",)):
+        return _enqueue_job(book_id, "reference_preparation", "service.worker.prepare_reference")
+
+    text_artifacts = [
+        item for item in book["artifacts"]
+        if item["stage"] == "text" and item["kind"] == "normalized_text" and not item.get("stale")
+    ]
+    if not text_artifacts:
+        raise HTTPException(status_code=409, detail="TTS text is not ready for generation")
+    latest_text = max(text_artifacts, key=lambda item: item["version"])
+    page_count = latest_text.get("metadata", {}).get("confirmed_pages")
+    pages_artifacts = [
+        item for item in book["artifacts"]
+        if item["stage"] == "pages" and item["kind"] == "page_metadata" and not item.get("stale")
+    ]
+    if not pages_artifacts:
+        raise HTTPException(status_code=409, detail="Page metadata is not ready for generation")
+    home = store.service_home().resolve()
+    pages_path = (home / max(pages_artifacts, key=lambda item: item["version"])["path"]).resolve()
+    pages_path.relative_to(home)
+    expected_page_count = len(json.loads(pages_path.read_text(encoding="utf-8"))["pages"])
+    if page_count is not None and len(page_count) != expected_page_count:
+        raise HTTPException(status_code=409, detail="Confirm every page's TTS text before generation")
+
+    audio_kinds = ("preview_audio_review", "final_audio_review")
+    audio_artifacts = [
+        item for item in book["artifacts"]
+        if item["stage"] in audio_kinds and item["kind"] == "audiobook_mp3"
+    ]
+    has_full_audio = any(item["stage"] == "final_audio_review" for item in audio_artifacts)
+    has_preview_audio = any(item["stage"] == "preview_audio_review" for item in audio_artifacts)
+    latest_audio_by_stage = {
+        stage: max(
+            (item for item in audio_artifacts if item["stage"] == stage),
+            key=lambda item: item["version"],
+            default=None,
+        )
+        for stage in audio_kinds
+    }
+    latest_audio = latest_audio_by_stage["final_audio_review"] or latest_audio_by_stage["preview_audio_review"]
+    text_is_dirty = latest_audio is not None and (
+        latest_audio.get("stale", False)
+        or latest_audio.get("metadata", {}).get("text_version") not in (None, latest_text["version"])
+    )
+    pronunciation_version = max(
+        (
+            item["version"] for item in book["artifacts"]
+            if item["stage"] == "pronunciation" and item["kind"] == "pronunciation_dict" and not item.get("stale")
+        ),
+        default=0,
+    )
+    pronunciation_is_dirty = latest_audio is not None and (
+        latest_audio.get("metadata", {}).get("pronunciation_version", 0) != pronunciation_version
+    )
+    latest_reference = max(reference_inputs, key=lambda item: item["version"])
+    processed_references = [
+        item for item in book["artifacts"]
+        if item["stage"] == "reference_review" and item["kind"] == "processed_audio" and not item.get("stale")
+    ]
+    latest_processed_reference = max(processed_references, key=lambda item: item["version"])
+    reference_is_newer = latest_reference["created_at"] > latest_audio["created_at"] if latest_audio else False
+    reference_changed = reference_is_newer or (
+        latest_processed_reference["created_at"] > latest_audio["created_at"] if latest_audio else False
+    )
+
+    if latest_audio is None or text_is_dirty or pronunciation_is_dirty or reference_changed:
+        if has_full_audio:
+            stage, task_name = (
+                ("full_audio", "service.worker.synthesize_full_audio")
+                if reference_changed
+                else ("full_audio_update", "service.worker.synthesize_full_audio_update")
+            )
+        elif has_preview_audio:
+            stage, task_name = (
+                ("preview_audio", "service.worker.synthesize_preview_audio")
+                if reference_changed
+                else ("preview_audio_update", "service.worker.synthesize_preview_audio_update")
+            )
+        else:
+            stage, task_name = "preview_audio", "service.worker.synthesize_preview_audio"
+        return _enqueue_job(book_id, stage, task_name)
+
+    video_stage = "final_video_review" if has_full_audio else "preview_video_review"
+    videos = [
+        item for item in book["artifacts"]
+        if item["stage"] == video_stage and item["kind"] == "video_mp4"
+    ]
+    video_is_stale = not videos or max(videos, key=lambda item: item["version"]).get("stale", False)
+    if not video_is_stale:
+        raise HTTPException(status_code=409, detail="The latest audio and video already match the saved inputs")
+    if has_full_audio:
+        return _enqueue_job(book_id, "full_video", "service.worker.render_full_video")
+    return _enqueue_job(book_id, "preview_video", "service.worker.render_preview_video")
 
 
 @app.get("/api/artifacts/{artifact_id}")

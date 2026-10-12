@@ -13,7 +13,10 @@ REDIS_DIR="$APP_DIR/redis"
 LOG_DIR="$SERVICE_HOME/logs"
 PID_DIR="$SERVICE_HOME/pids"
 BACKUP_DIR="$APP_DIR/backups"
+AUTODL_HOOK="${READING_AUTODL_HOOK:-/etc/autodl.sh}"
+WATCHDOG_INTERVAL="${READING_WATCHDOG_INTERVAL:-60}"
 PYTHONPATH="$APP_DIR${PYTHONPATH:+:$PYTHONPATH}"
+SCRIPT_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
 
 export READING_SERVICE_HOME="$SERVICE_HOME"
 export READING_REDIS_URL="$REDIS_URL"
@@ -24,6 +27,8 @@ export PYTHONPATH
 
 API_PID_FILE="$PID_DIR/api.pid"
 WORKER_PID_FILE="$PID_DIR/worker.pid"
+WATCHDOG_PID_FILE="$PID_DIR/watchdog.pid"
+WATCHDOG_LOG_FILE="$LOG_DIR/watchdog.log"
 
 log() {
     printf '[reading-service] %s\n' "$*"
@@ -65,8 +70,55 @@ pid_is_running() {
     [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null
 }
 
+pid_matches_command() {
+    local pid="$1"
+    local expected="$2"
+    local command_line
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    [[ -r "/proc/$pid/cmdline" ]] || return 1
+    command_line="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null)"
+    [[ "$command_line" == *"$expected"* ]]
+}
+
+terminate_managed_process() {
+    local pid="$1"
+    local expected="$2"
+    local attempt
+    pid_matches_command "$pid" "$expected" || return 0
+    kill -TERM "$pid" 2>/dev/null || true
+    for attempt in {1..10}; do
+        pid_matches_command "$pid" "$expected" || return 0
+        sleep 1
+    done
+    if pid_matches_command "$pid" "$expected"; then
+        kill -KILL "$pid" 2>/dev/null || true
+    fi
+}
+
 rq_worker_active() {
-    "$CONDA_PYTHON" -c 'import os; from redis import Redis; from rq import Worker; connection=Redis.from_url(os.environ["READING_REDIS_URL"]); workers=Worker.all(connection=connection); active=[worker for worker in workers if any(queue.name == "reading" for queue in worker.queues) and worker.get_state() in {"idle", "busy"}]; raise SystemExit(not bool(active))' >/dev/null 2>&1
+    "$CONDA_PYTHON" - <<'PY' >/dev/null 2>&1
+import os
+from pathlib import Path
+
+from redis import Redis
+from rq import Worker
+
+connection = Redis.from_url(os.environ["READING_REDIS_URL"])
+for worker in Worker.all(connection=connection):
+    if not any(queue.name == "reading" for queue in worker.queues):
+        continue
+    if worker.get_state() not in {"idle", "busy"} or connection.ttl(worker.key) <= 0:
+        continue
+    cmdline = Path(f"/proc/{worker.pid}/cmdline")
+    try:
+        command = cmdline.read_bytes().replace(b"\0", b" ").lower()
+    except OSError:
+        continue
+    if b"rq" in command and b"worker" in command and b"reading" in command:
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
 }
 
 start_redis() {
@@ -88,9 +140,13 @@ start_redis() {
 }
 
 start_worker() {
-    if pid_is_running "$WORKER_PID_FILE"; then
-        log "RQ worker already running (PID $(<"$WORKER_PID_FILE"))"
-        return
+    if pid_is_running "$WORKER_PID_FILE" && pid_matches_command "$(<"$WORKER_PID_FILE")" "rq worker reading"; then
+        if rq_worker_active; then
+            log "RQ worker already running (PID $(<"$WORKER_PID_FILE"))"
+            return
+        fi
+        log "RQ worker PID $(<"$WORKER_PID_FILE") has no live Redis heartbeat; restarting it"
+        terminate_managed_process "$(<"$WORKER_PID_FILE")" "rq worker reading"
     fi
     if rq_worker_active; then
         log "An RQ worker is already registered for the reading queue"
@@ -100,7 +156,20 @@ start_worker() {
     nohup "$RQ_CLI" worker reading --url "$REDIS_URL" \
         >>"$LOG_DIR/worker.log" 2>&1 < /dev/null &
     echo "$!" > "$WORKER_PID_FILE"
-    log "RQ worker started (PID $(<"$WORKER_PID_FILE")); log: $LOG_DIR/worker.log"
+    local attempt
+    for attempt in {1..15}; do
+        if rq_worker_active; then
+            log "RQ worker started (PID $(<"$WORKER_PID_FILE")); log: $LOG_DIR/worker.log"
+            return
+        fi
+        if ! kill -0 "$(<"$WORKER_PID_FILE")" 2>/dev/null; then
+            log "RQ worker exited during startup; inspect $LOG_DIR/worker.log"
+            return 1
+        fi
+        sleep 1
+    done
+    log "RQ worker process exists but has not registered a live heartbeat; inspect $LOG_DIR/worker.log"
+    return 1
 }
 
 start_api() {
@@ -108,9 +177,9 @@ start_api() {
         log "API already healthy on 127.0.0.1:$API_PORT"
         return
     fi
-    if pid_is_running "$API_PID_FILE"; then
-        log "API PID $(<"$API_PID_FILE") exists but health check failed"
-        return 1
+    if pid_is_running "$API_PID_FILE" && pid_matches_command "$(<"$API_PID_FILE")" "uvicorn service.app:app"; then
+        log "API PID $(<"$API_PID_FILE") is not healthy; restarting it"
+        terminate_managed_process "$(<"$API_PID_FILE")" "uvicorn service.app:app"
     fi
     rm -f "$API_PID_FILE"
     cd "$APP_DIR"
@@ -205,7 +274,7 @@ status() {
     else
         printf 'API:           stopped/unhealthy\n'
     fi
-    if pid_is_running "$WORKER_PID_FILE"; then
+    if pid_is_running "$WORKER_PID_FILE" && pid_matches_command "$(<"$WORKER_PID_FILE")" "rq worker reading"; then
         printf 'RQ worker:     running (PID %s)\n' "$(<"$WORKER_PID_FILE")"
     elif rq_worker_active; then
         printf 'RQ worker:     active in Redis registry (started outside this script)\n'
@@ -221,15 +290,26 @@ status() {
 
 stop() {
     backup_state
-    if pid_is_running "$API_PID_FILE"; then
+    if pid_is_running "$WATCHDOG_PID_FILE" && pid_matches_command "$(<"$WATCHDOG_PID_FILE")" "$SCRIPT_PATH watch"; then
+        kill "$(<"$WATCHDOG_PID_FILE")" 2>/dev/null || true
+        rm -f "$WATCHDOG_PID_FILE"
+        log "Health watchdog stopped"
+    else
+        rm -f "$WATCHDOG_PID_FILE"
+    fi
+    if pid_is_running "$API_PID_FILE" && pid_matches_command "$(<"$API_PID_FILE")" "uvicorn service.app:app"; then
         kill "$(<"$API_PID_FILE")" 2>/dev/null || true
         rm -f "$API_PID_FILE"
         log "API stopped"
+    else
+        rm -f "$API_PID_FILE"
     fi
-    if pid_is_running "$WORKER_PID_FILE"; then
+    if pid_is_running "$WORKER_PID_FILE" && pid_matches_command "$(<"$WORKER_PID_FILE")" "rq worker reading"; then
         kill "$(<"$WORKER_PID_FILE")" 2>/dev/null || true
         rm -f "$WORKER_PID_FILE"
         log "RQ worker stopped"
+    else
+        rm -f "$WORKER_PID_FILE"
     fi
     if redis-cli -p "$REDIS_PORT" ping 2>/dev/null | grep -q PONG; then
         redis-cli -p "$REDIS_PORT" shutdown nosave
@@ -237,13 +317,188 @@ stop() {
     fi
 }
 
+start_all() {
+    mkdir -p "$SERVICE_HOME" "$LOG_DIR" "$PID_DIR" "$REDIS_DIR"
+    check_environment
+    start_redis
+    start_worker
+    start_api
+    status
+}
+
+watch_services() {
+    [[ "$WATCHDOG_INTERVAL" =~ ^[0-9]+$ ]] && ((WATCHDOG_INTERVAL >= 10)) || {
+        log "READING_WATCHDOG_INTERVAL must be an integer of at least 10 seconds"
+        return 2
+    }
+    while true; do
+        if ! redis-cli -p "$REDIS_PORT" ping 2>/dev/null | grep -q PONG \
+            || ! curl --silent --fail "http://127.0.0.1:$API_PORT/api/health" >/dev/null 2>&1 \
+            || ! rq_worker_active; then
+            log "Watchdog detected an unhealthy service; attempting recovery" >>"$WATCHDOG_LOG_FILE"
+            if ! "$SCRIPT_PATH" start >>"$WATCHDOG_LOG_FILE" 2>&1; then
+                log "Recovery failed; will retry in ${WATCHDOG_INTERVAL}s" >>"$WATCHDOG_LOG_FILE"
+            fi
+        fi
+        sleep "$WATCHDOG_INTERVAL"
+    done
+}
+
+start_watchdog() {
+    if pid_is_running "$WATCHDOG_PID_FILE" && pid_matches_command "$(<"$WATCHDOG_PID_FILE")" "$SCRIPT_PATH watch"; then
+        log "Watchdog already running (PID $(<"$WATCHDOG_PID_FILE"))"
+        return
+    fi
+    rm -f "$WATCHDOG_PID_FILE"
+    nohup "$SCRIPT_PATH" watch >>"$WATCHDOG_LOG_FILE" 2>&1 < /dev/null &
+    echo "$!" > "$WATCHDOG_PID_FILE"
+    if ! pid_matches_command "$(<"$WATCHDOG_PID_FILE")" "$SCRIPT_PATH watch"; then
+        log "Watchdog failed to start; inspect $WATCHDOG_LOG_FILE"
+        rm -f "$WATCHDOG_PID_FILE"
+        return 1
+    fi
+    log "Watchdog started (PID $(<"$WATCHDOG_PID_FILE")); checking every ${WATCHDOG_INTERVAL}s"
+}
+
+install_autostart() {
+    local boot_allow_cpu="${READING_BOOT_ALLOW_CPU:-1}"
+    [[ "$boot_allow_cpu" == "0" || "$boot_allow_cpu" == "1" ]] || {
+        log "READING_BOOT_ALLOW_CPU must be 0 or 1"
+        return 2
+    }
+    "$CONDA_PYTHON" - "$AUTODL_HOOK" "$APP_DIR" "$SERVICE_HOME" "$CONDA_PYTHON" "$REDIS_URL" "$REDIS_PORT" "$API_PORT" "$boot_allow_cpu" <<'PY'
+import os
+import shlex
+import shutil
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+hook = Path(sys.argv[1])
+app_dir, service_home, python, redis_url, redis_port, api_port, allow_cpu = sys.argv[2:]
+begin = "# BEGIN READING SERVICE AUTOSTART"
+end = "# END READING SERVICE AUTOSTART"
+script = Path(app_dir) / "scripts" / "autodl_reading_service.sh"
+log = Path(service_home) / "logs" / "autostart.log"
+exports = {
+    "READING_APP_DIR": app_dir,
+    "READING_SERVICE_HOME": service_home,
+    "READING_CONDA_PYTHON": python,
+    "READING_REDIS_URL": redis_url,
+    "READING_REDIS_PORT": redis_port,
+    "READING_API_PORT": api_port,
+    "READING_ALLOW_CPU": allow_cpu,
+}
+block = "\n".join([
+    begin,
+    "(",
+    *(f"  export {key}={shlex.quote(value)}" for key, value in exports.items()),
+    f"  nohup bash {shlex.quote(str(script))} autostart >>{shlex.quote(str(log))} 2>&1 </dev/null &",
+    ")",
+    end,
+])
+hook.parent.mkdir(parents=True, exist_ok=True)
+original = hook.read_text(encoding="utf-8") if hook.exists() else "#!/bin/bash\n"
+if (begin in original) != (end in original):
+    raise SystemExit(f"Incomplete Reading autostart markers in {hook}; refusing to overwrite it")
+if begin in original:
+    prefix, remainder = original.split(begin, 1)
+    _, suffix = remainder.split(end, 1)
+    updated = prefix.rstrip() + "\n\n" + block + suffix
+else:
+    updated = original.rstrip() + "\n\n" + block + "\n"
+if updated != original:
+    if hook.exists():
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup = hook.with_name(f"{hook.name}.reading-backup-{timestamp}")
+        shutil.copy2(hook, backup)
+        print(f"AutoDL hook backup: {backup}")
+        mode = hook.stat().st_mode
+    else:
+        mode = 0o755
+    temporary = hook.with_name(f".{hook.name}.reading-tmp")
+    temporary.write_text(updated, encoding="utf-8")
+    temporary.chmod(mode & 0o777)
+    os.replace(temporary, hook)
+print(f"AutoDL startup hook installed: {hook}")
+PY
+}
+
+uninstall_autostart() {
+    "$CONDA_PYTHON" - "$AUTODL_HOOK" <<'PY'
+import os
+import shutil
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+hook = Path(sys.argv[1])
+begin = "# BEGIN READING SERVICE AUTOSTART"
+end = "# END READING SERVICE AUTOSTART"
+if not hook.exists():
+    print(f"AutoDL startup hook not found: {hook}")
+    raise SystemExit(0)
+original = hook.read_text(encoding="utf-8")
+if (begin in original) != (end in original):
+    raise SystemExit(f"Incomplete Reading autostart markers in {hook}; refusing to modify it")
+if begin not in original:
+    print("Reading service autostart is not installed")
+    raise SystemExit(0)
+prefix, remainder = original.split(begin, 1)
+_, suffix = remainder.split(end, 1)
+updated = prefix.rstrip() + "\n" + suffix.lstrip("\n")
+timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+backup = hook.with_name(f"{hook.name}.reading-backup-{timestamp}")
+shutil.copy2(hook, backup)
+temporary = hook.with_name(f".{hook.name}.reading-tmp")
+temporary.write_text(updated, encoding="utf-8")
+temporary.chmod(hook.stat().st_mode & 0o777)
+os.replace(temporary, hook)
+print(f"Removed Reading autostart block; backup: {backup}")
+PY
+}
+
+check_autostart() {
+    [[ -f "$AUTODL_HOOK" ]] || { log "AutoDL startup hook missing: $AUTODL_HOOK"; return 1; }
+    grep -Fq "# BEGIN READING SERVICE AUTOSTART" "$AUTODL_HOOK" \
+        && grep -Fq "# END READING SERVICE AUTOSTART" "$AUTODL_HOOK" \
+        || { log "Reading service boot block is not installed in $AUTODL_HOOK"; return 1; }
+    log "AutoDL boot hook installed in $AUTODL_HOOK"
+    if pid_is_running "$WATCHDOG_PID_FILE" && pid_matches_command "$(<"$WATCHDOG_PID_FILE")" "$SCRIPT_PATH watch"; then
+        log "Health watchdog running (PID $(<"$WATCHDOG_PID_FILE"))"
+    else
+        log "Health watchdog not running"
+        return 1
+    fi
+}
+
 case "${1:-start}" in
     start)
+        start_all
+        ;;
+    autostart)
+        start_all
+        start_watchdog
+        ;;
+    watch)
+        watch_services
+        ;;
+    install-autostart)
+        ALLOW_CPU="${READING_BOOT_ALLOW_CPU:-1}"
+        [[ "$ALLOW_CPU" == "0" || "$ALLOW_CPU" == "1" ]] || { log "READING_BOOT_ALLOW_CPU must be 0 or 1"; exit 2; }
+        export READING_ALLOW_CPU="$ALLOW_CPU"
         mkdir -p "$SERVICE_HOME" "$LOG_DIR" "$PID_DIR" "$REDIS_DIR"
         check_environment
-        start_redis
-        start_worker
-        start_api
+        install_autostart
+        start_all
+        start_watchdog
+        check_autostart
+        ;;
+    uninstall-autostart)
+        uninstall_autostart
+        ;;
+    check-autostart)
+        check_autostart
         status
         ;;
     stop)
@@ -261,7 +516,7 @@ case "${1:-start}" in
         backup_state
         ;;
     *)
-        printf 'Usage: %s {start|stop|status|check|backup}\n' "$0" >&2
+        printf 'Usage: %s {start|autostart|watch|install-autostart|uninstall-autostart|check-autostart|stop|status|check|backup}\n' "$0" >&2
         exit 2
         ;;
 esac

@@ -223,6 +223,25 @@ def invalidate_text_dependent_artifacts(book_id: str, reason: str) -> int:
         return len(rows)
 
 
+def invalidate_reference_dependent_artifacts(book_id: str, reason: str) -> int:
+    now = _now()
+    with connect() as db:
+        rows = db.execute(
+            "SELECT id FROM artifacts WHERE book_id = ? AND ("
+            "(stage = 'reference_input' AND kind IN ('voice_sample', 'ref_text')) OR "
+            "stage IN ('reference_review', 'preview_audio_review', 'preview_video_review', "
+            "'final_audio_review', 'final_video_review')"
+            ") AND id NOT IN (SELECT artifact_id FROM invalidated_artifacts)",
+            (book_id,),
+        ).fetchall()
+        db.executemany(
+            "INSERT INTO invalidated_artifacts(artifact_id, reason, invalidated_at) VALUES (?, ?, ?)",
+            [(row["id"], reason, now) for row in rows],
+        )
+        db.execute("UPDATE books SET updated_at = ? WHERE id = ?", (now, book_id))
+        return len(rows)
+
+
 def count_active_jobs(book_id: str) -> int:
     with connect() as db:
         return int(db.execute(

@@ -22,28 +22,61 @@ HEADING_RE = re.compile(
 )
 FIGURE_RE = re.compile(r"^(?:图表?|表格?)\s*\d*\s*[:：.、]?", re.IGNORECASE)
 PAGE_BREAK_TOKEN = "<<<BOOK_PAGE_BREAK>>>"
-SENTENCE_END_RE = re.compile(r"[。！？!?；;]")
+SENTENCE_END_RE = re.compile(r"……|…|[。！？!?；;，,、]")
+MAX_PAGE_BOUNDARY_SHIFT = 10
 
 
 def reconcile_page_breaks(page_texts: list[str]) -> list[str]:
-    """Move page breaks to the nearest sentence end without changing page count."""
-    pages = list(page_texts)
-    for index in range(len(pages) - 1):
-        left, right = pages[index], pages[index + 1]
-        boundary = len(left)
-        combined = left + right
-        sentence_ends = [match.end() for match in SENTENCE_END_RE.finditer(combined)]
-        before = max((position for position in sentence_ends if position <= boundary), default=None)
-        after = min((position for position in sentence_ends if position > boundary), default=None)
-        if before is None and after is None:
-            continue
-        if before is None or (after is not None and after - boundary < boundary - before):
-            boundary = after
-        else:
-            boundary = before
-        pages[index] = combined[:boundary]
-        pages[index + 1] = combined[boundary:]
-    return pages
+    """Repair short sentence/clause splits without moving headings across pages."""
+    if len(page_texts) < 2:
+        return list(page_texts)
+
+    original_pages = list(page_texts)
+    offsets = [0]
+    for page in original_pages:
+        offsets.append(offsets[-1] + len(page))
+    combined_text = "".join(original_pages)
+    boundaries = []
+
+    def edge_is_heading(text: str, *, trailing: bool) -> bool:
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if not lines:
+            return False
+        edge = lines[-1] if trailing else lines[0]
+        return bool(HEADING_RE.match(edge))
+
+    for index, (left, right) in enumerate(zip(original_pages, original_pages[1:])):
+        local_boundary = len(left)
+        cut = offsets[index] + local_boundary
+        if not edge_is_heading(left, trailing=True) and not edge_is_heading(right, trailing=False):
+            pair_text = left + right
+            sentence_ends = [match.end() for match in SENTENCE_END_RE.finditer(pair_text)]
+
+            def stays_in_paragraph(position: int) -> bool:
+                start, end = sorted((position, local_boundary))
+                return re.search(r"\n[ \t]*\n", pair_text[start:end]) is None
+
+            after = min(
+                (
+                    position for position in sentence_ends
+                    if local_boundary < position <= local_boundary + MAX_PAGE_BOUNDARY_SHIFT
+                    and stays_in_paragraph(position)
+                ),
+                default=None,
+            )
+            if after is not None:
+                local_boundary = after
+                cut = offsets[index] + local_boundary
+
+        previous_cut = boundaries[-1] if boundaries else 0
+        next_original_boundary = offsets[index + 2]
+        if cut != offsets[index] + len(left) and not previous_cut < cut < next_original_boundary:
+            cut = offsets[index] + len(left)
+        boundaries.append(cut)
+
+    starts = [0, *boundaries]
+    ends = [*boundaries, len(combined_text)]
+    return [combined_text[start:end] for start, end in zip(starts, ends)]
 
 
 def extract_page_records(pdf: Path) -> tuple[list[dict], list[dict]]:

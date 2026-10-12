@@ -1,49 +1,34 @@
-# reading — voice-cloned audiobook toolkit
+# Reading Studio — page-aligned audiobook workflow
 
-For the complete AutoDL installation and PDF-to-MP4 deployment guide, see
-[README_AUTODL.md](README_AUTODL.md).
+The current project direction is a reviewable service workflow for PDF or image books: prepare pages and text, review the voice reference, generate a five-page audio/video preview, then build the full audiobook and video.
 
-Turn a text file (`data/book.txt`) into an audiobook narrated in a **cloned voice**, using free/open-source TTS. Three engines are provided; **CosyVoice** (Colab) currently gives the best Chinese quality.
+Start with [README_SERVICE.md](README_SERVICE.md) for the service workflow and [README_AUTODL.md](README_AUTODL.md) for AutoDL setup and deployment.
 
-> 📐 See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the full technique map and pipeline diagram.
+See [SERVICE_PLAN.md](SERVICE_PLAN.md) for the workflow stages, persistence model, and acceptance checks.
 
 ## Structure
 ```
 reading/
-├── ARCHITECTURE.md              # technique map + pipeline diagram (Mermaid)
-├── src/                         # local Python scripts
-│   ├── narrate_book.py          #   XTTS-v2 pipeline (local, CPU-friendly)
-│   ├── narrate_book_f5.py       #   F5-TTS pipeline (local; run with the F5 venv)
-│   └── demo.py                  #   ElevenLabs TTS quick demo (needs .env API key)
-├── notebooks/                   # Colab notebooks (GPU)
-│   ├── CosyVoice_Audiobook_Colab.ipynb   # best Chinese quality; two-phase CPU/GPU, resumable
-│   └── F5_TTS_Audiobook_Colab.ipynb
-├── data/
-│   ├── book.txt                 # input text to narrate (UTF-8)
-│   ├── samples/                 # raw voice samples (sample.mp3, sample2.mp4)
-│   └── reference/               # processed reference clips
-│       ├── ref.wav              #   cleaned/normalized (24 kHz)
-│       └── ref_enhanced.wav     #   VoiceFixer-enhanced (denoised, 44.1 kHz) -- the one scripts use
-├── output/                      # generated audio (git-ignored)
-└── .env                         # ELEVENLABS_API_KEY (git-ignored -- never commit)
+├── service/                     # API, SQLite store, browser workflow, background worker
+├── src/                         # PDF/image preparation, F5 synthesis, timing, and video
+├── scripts/                     # AutoDL service operations
+├── tests/                       # workflow and processing tests
+├── review_archive/              # legacy experiments retained for manual review
+├── data/                        # source books and voice references
+└── output/                      # generated artifacts (git-ignored)
 ```
 
-## Quick start
+## Main workflow
 
-### Colab (recommended, GPU) — CosyVoice
-1. Upload `notebooks/CosyVoice_Audiobook_Colab.ipynb` to https://colab.research.google.com.
-2. Follow the in-notebook steps: Part 1 (CPU) downloads the model to Drive; Part 2 (GPU) generates.
-3. Upload `data/reference/ref_enhanced.wav` and `data/book.txt` when prompted.
+Use the browser service for book creation, page/text review, reference-audio review, preview approval, and final media generation. See [README_SERVICE.md](README_SERVICE.md).
 
-### Local — XTTS-v2
-```powershell
-pip install coqui-tts soundfile pypinyin jieba
-python src/narrate_book.py            # writes output/xtts/audiobook.mp3
-```
+For the one-command PDF-to-MP4 CLI workflow and its inputs, see [README_AUTODL.md](README_AUTODL.md).
 
-### Local — F5-TTS (separate venv, needs transformers 5.x)
-F5-TTS needs `transformers 5.x`, which conflicts with the XTTS/coqui stack in your system Python.
-Keep it isolated in its own virtual environment (`.venv-f5`):
+The CLI pipeline uses F5-TTS in a separate Python environment because its PyTorch and Transformers requirements can conflict with the service/video environment. AutoDL environment setup is documented in [README_AUTODL.md](README_AUTODL.md).
+
+## Local F5 runner
+
+For a direct local F5 synthesis run, use the F5 environment's interpreter:
 ```powershell
 cd D:\workspace\Havvay\reading
 
@@ -57,7 +42,7 @@ python -m venv .venv-f5
 # 3. Run the pipeline with the venv's python
 .venv-f5\Scripts\python.exe src/narrate_book_f5.py   # writes output/f5/audiobook.mp3
 ```
-> Note: F5 on CPU is ~16× realtime (slow). It's here for quality comparison; use the CosyVoice Colab notebook for the full book.
+F5 inference is slow on CPU; use a GPU for full books.
 
 ## Virtual environments (venv)
 A **venv** is an isolated Python environment — its own `python.exe` and its own `site-packages` —
@@ -65,11 +50,11 @@ so one project's dependencies can't clash with another's. This repo uses two env
 
 | Environment | Used by | Key dependency |
 |-------------|---------|----------------|
-| System Python | XTTS-v2 (`narrate_book.py`), ElevenLabs demo | `transformers 4.57.6`, `coqui-tts` |
+| Service/video environment | API, PDF and video processing | see `requirements-service.txt` and `requirements-video.txt` |
 | `.venv-f5` (in-project, git-ignored) | F5-TTS (`narrate_book_f5.py`) | `transformers 5.x`, `f5-tts` |
 
 The whole trick is **which `python.exe` you call**:
-- `python …` → system Python (XTTS env)
+- service/video commands → service environment
 - `.venv-f5\Scripts\python.exe …` → the F5 env
 
 Create → install → run (all with the venv's own python — see the F5 section above).
@@ -109,7 +94,7 @@ python3 src/build_book_video.py \
     --voice data/voice.mp3 \
     --ref-text "填写 voice.mp3 中实际说出的完整内容" \
     --f5-python .venv-f5/bin/python \
-    --speed 1.2 \
+	--speed 1.0 \
     --output output/book.mp4
 ```
 
@@ -170,8 +155,7 @@ python3 src/book_video.py ... --font /root/autodl-tmp/fonts/NotoSansCJK-Regular.
 ```
 - `.env`, `output/`, and virtual-envs are git-ignored.
 
-## Voice-clone quality ranking (Chinese, observed)
-CosyVoice 3 ≥ F5-TTS > XTTS-v2. All are zero-shot; for a bigger jump, fine-tune (e.g. GPT-SoVITS).
+Legacy engine experiments and their setup notes are retained in [review_archive](review_archive/README.md) for review; they are not part of the current service workflow.
 
 ### One-command PDF to MP4 pipeline
 
@@ -185,7 +169,7 @@ python3 src/build_book_video.py \
 	--voice data/reference/919.wav \
 	--ref-text "第一章 社会工作的内涵，原则及主要领域。随着社会现代化的发展，各种社会问题变得越来越复杂。" \
 	--f5-python .venv-f5/bin/python \
-	--speed 1.2 \
+	--speed 1.0 \
 	--output output/book.mp4
 ```
 

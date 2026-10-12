@@ -135,7 +135,7 @@ python src/build_book_video.py \
   --voice data/zikai/voice.mp3 \
   --ref-text "这里填写 voice.mp3 实际说出的准确文字" \
   --f5-python /root/miniconda3/envs/f5/bin/python \
-  --speed 1.2 \
+  --speed 1.0 \
   --work-dir output/zikai_build \
   --output output/zikai.mp4
 ```
@@ -168,7 +168,7 @@ python src/build_book_video.py \
   --voice data/voice.wav \
   --ref-text "这里填写声音样本实际说出的完整文字" \
   --f5-python /root/miniconda3/envs/f5/bin/python \
-  --speed 1.2 \
+  --speed 1.0 \
   --output output/book.mp4
 ```
 
@@ -252,7 +252,7 @@ output/book_build/
 | `--ref-text` | 必填 | 声音样本准确转写 |
 | `--f5-python` | 当前 Python | F5-TTS 环境的 Python |
 | `--work-dir` | `output/book_build` | 中间文件目录 |
-| `--speed` | `1.2` | F5-TTS 语速，原速使用 `1.0` |
+| `--speed` | `1.0` | F5-TTS 语速，原速 |
 | `--nfe-step` | `32` | F5 推理步数，越高通常质量越好但越慢 |
 | `--max-chars` | `100` | 单个 TTS chunk 最大字符数 |
 | `--test-limit` | `0` | `0` 表示全书；例如 `10` 只生成前 10 个 chunk |
@@ -350,7 +350,7 @@ python src/prepare_reference.py \
   --reference-audio output/book_build/reference/reference.wav \
   --reference-text-file output/book_build/reference/reference.txt \
   --output-dir output/book_build/f5 \
-  --speed 1.2 \
+  --speed 1.0 \
   --test-limit 0
 ```
 

@@ -58,7 +58,7 @@ def _year(match: re.Match[str]) -> str:
 def normalize_text(text: str) -> str:
     """Make text readable by Chinese TTS while retaining useful punctuation."""
     text = text.replace("**", "")
-    text = re.sub(r"[\"'“”‘’「」『』《》〈〉]", "", text)
+    text = re.sub(r"[\"'“”‘’「」『』〈〉]", "", text)
     text = text.replace("％", "%")
     text = re.sub(r"[ \t\f\v]+", " ", text)
     text = re.sub(r" *\r?\n *", "\n", text)
@@ -82,7 +82,7 @@ def normalize_text(text: str) -> str:
         lambda m: chinese_number(m.group(1)) + m.group(2),
         text,
     )
-    text = re.sub(r"(?<=[\u3400-\u9fff])\s+(?=[\u3400-\u9fff])", "", text)
+    text = re.sub(r"(?<=[\u3400-\u9fff])[ \t]*(?:\r?\n[ \t]*|[ \t]+)(?=[\u3400-\u9fff])", "", text)
     return text
 
 
