@@ -71,7 +71,7 @@ Day 24: Multi-agent coordination
 Day 25: CI/CD + infra
   - [~] Task: GitHub Actions runs the test suite and validates the Docker image build; deployment-specific notes remain outstanding.
 Day 26: Finalize capstone
-  - [~] Task: Architecture notes exist; demo polish and screencast remain outstanding.
+  - [~] Task: Architecture notes are assembled and a demo script is in place; the screencast remains the last polish item.
 Day 27-28: Buffer & wrap-up
 
 Notes:
