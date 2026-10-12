@@ -1,0 +1,5 @@
+# Install this inside the AutoDL F5 environment.
+# Keep the preinstalled CUDA-compatible torch/torchaudio when possible.
+f5-tts
+soundfile>=0.12.1
+numpy>=1.26.0
