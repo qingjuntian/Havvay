@@ -69,7 +69,7 @@ Day 24: Multi-agent coordination
   - [x] Implemented planner -> worker messages -> ordered aggregation via `Agent.multi_agent_plan_and_execute()` and the opt-in `POST /query/multi-agent` endpoint; API coverage passes (13 tests).
   - [D] Distinct specialist-agent personas deferred; current workers share one agent and tool set.
 Day 25: CI/CD + infra
-  - [~] Task: GitHub Actions runs the test suite; Docker image build in CI and deployment-specific notes remain outstanding.
+  - [~] Task: GitHub Actions runs the test suite and validates the Docker image build; deployment-specific notes remain outstanding.
 Day 26: Finalize capstone
   - [~] Task: Architecture notes exist; demo polish and screencast remain outstanding.
 Day 27-28: Buffer & wrap-up
