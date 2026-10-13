@@ -15,6 +15,59 @@ from typing import Any, Iterator
 ROOT = Path(__file__).resolve().parents[1]
 PAGE_BREAK_TOKEN = "<<<BOOK_PAGE_BREAK>>>"
 
+SCHEMA_SQL = """
+    CREATE TABLE IF NOT EXISTS books (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        current_stage TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS artifacts (
+        id TEXT PRIMARY KEY,
+        book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+        stage TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        path TEXT NOT NULL,
+        sha256 TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        metadata TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(book_id, stage, kind, version)
+    );
+    CREATE TABLE IF NOT EXISTS jobs (
+        id TEXT PRIMARY KEY,
+        book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+        stage TEXT NOT NULL,
+        status TEXT NOT NULL,
+        queue_id TEXT,
+        progress REAL NOT NULL DEFAULT 0,
+        error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+        stage TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        note TEXT NOT NULL,
+        artifact_version INTEGER,
+        created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS invalidated_artifacts (
+        artifact_id TEXT PRIMARY KEY REFERENCES artifacts(id) ON DELETE CASCADE,
+        reason TEXT NOT NULL,
+        invalidated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS artifacts_book_idx ON artifacts(book_id, created_at);
+    CREATE INDEX IF NOT EXISTS jobs_book_idx ON jobs(book_id, created_at);
+    CREATE INDEX IF NOT EXISTS events_book_idx ON events(book_id, id);
+"""
+
 
 def service_home() -> Path:
     configured = os.environ.get("READING_SERVICE_HOME")
@@ -41,6 +94,9 @@ def connect() -> Iterator[sqlite3.Connection]:
     connection = sqlite3.connect(path, timeout=30)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
+    if connection.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'books'").fetchone() is None:
+        connection.executescript(SCHEMA_SQL)
+        connection.commit()
     try:
         yield connection
         connection.commit()
@@ -53,60 +109,7 @@ def connect() -> Iterator[sqlite3.Connection]:
 
 def init_db() -> None:
     with connect() as db:
-        db.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS books (
-                id TEXT PRIMARY KEY,
-                title TEXT NOT NULL,
-                current_stage TEXT NOT NULL,
-                status TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS artifacts (
-                id TEXT PRIMARY KEY,
-                book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
-                stage TEXT NOT NULL,
-                kind TEXT NOT NULL,
-                version INTEGER NOT NULL,
-                path TEXT NOT NULL,
-                sha256 TEXT NOT NULL,
-                mime_type TEXT NOT NULL,
-                metadata TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                UNIQUE(book_id, stage, kind, version)
-            );
-            CREATE TABLE IF NOT EXISTS jobs (
-                id TEXT PRIMARY KEY,
-                book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
-                stage TEXT NOT NULL,
-                status TEXT NOT NULL,
-                queue_id TEXT,
-                progress REAL NOT NULL DEFAULT 0,
-                error TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
-                stage TEXT NOT NULL,
-                event_type TEXT NOT NULL,
-                actor TEXT NOT NULL,
-                note TEXT NOT NULL,
-                artifact_version INTEGER,
-                created_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS invalidated_artifacts (
-                artifact_id TEXT PRIMARY KEY REFERENCES artifacts(id) ON DELETE CASCADE,
-                reason TEXT NOT NULL,
-                invalidated_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS artifacts_book_idx ON artifacts(book_id, created_at);
-            CREATE INDEX IF NOT EXISTS jobs_book_idx ON jobs(book_id, created_at);
-            CREATE INDEX IF NOT EXISTS events_book_idx ON events(book_id, id);
-            """
-        )
+        db.executescript(SCHEMA_SQL)
 
 
 def create_book(book_id: str, title: str, source_description: str = "Laid-out PDF uploaded") -> None:
@@ -223,12 +226,28 @@ def invalidate_text_dependent_artifacts(book_id: str, reason: str) -> int:
         return len(rows)
 
 
+def invalidate_reference_input_artifacts(book_id: str, reason: str) -> int:
+    now = _now()
+    with connect() as db:
+        rows = db.execute(
+            "SELECT id FROM artifacts WHERE book_id = ? "
+            "AND stage = 'reference_input' AND kind IN ('voice_sample', 'ref_text') "
+            "AND id NOT IN (SELECT artifact_id FROM invalidated_artifacts)",
+            (book_id,),
+        ).fetchall()
+        db.executemany(
+            "INSERT INTO invalidated_artifacts(artifact_id, reason, invalidated_at) VALUES (?, ?, ?)",
+            [(row["id"], reason, now) for row in rows],
+        )
+        db.execute("UPDATE books SET updated_at = ? WHERE id = ?", (now, book_id))
+        return len(rows)
+
+
 def invalidate_reference_dependent_artifacts(book_id: str, reason: str) -> int:
     now = _now()
     with connect() as db:
         rows = db.execute(
             "SELECT id FROM artifacts WHERE book_id = ? AND ("
-            "(stage = 'reference_input' AND kind IN ('voice_sample', 'ref_text')) OR "
             "stage IN ('reference_review', 'preview_audio_review', 'preview_video_review', "
             "'final_audio_review', 'final_video_review')"
             ") AND id NOT IN (SELECT artifact_id FROM invalidated_artifacts)",

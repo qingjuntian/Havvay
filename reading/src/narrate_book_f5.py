@@ -25,6 +25,7 @@ os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 import re
 import glob
 import time
+import math
 import subprocess
 import argparse
 import json
@@ -40,6 +41,7 @@ REF_TEXT        = "找一个短时间可以不被打扰的地方，坐着或躺�
 OUTPUT_DIR      = "output/f5"
 MAX_CHARS       = 100              # hard cap for one sentence or clause chunk
 SENTENCE_PAUSE  = 0.30
+COLON_PAUSE     = 0.35             # shorter but still noticeable pause after a colon / introduction
 PARAGRAPH_PAUSE = 0.65
 PAGE_PAUSE      = 0.0
 TEST_LIMIT      = 0                 # 0 = whole book; N>0 = first N chunks (smoke test)
@@ -50,16 +52,46 @@ SPEED           = 1.0
 
 SAMPLE_RATE = 24000
 PAGE_BREAK_TOKEN = "<<<BOOK_PAGE_BREAK>>>"
+LABEL_LINE_RE = re.compile(
+    r"^(?:作品名称|作者|题字出处|创作年代|作品定位|画面基础信息|核心画面元素|风格特点|艺术表现巧思|"
+    r"深层精神寓意|相关创作背景|所属系列|创作特点|图文内核的奇妙呼应|相关历史意义|原文|释义|"
+    r"底部英文题记)\s*[:：]"
+)
 HEADING_RE = re.compile(
     r"^(?:第[一二三四五六七八九十百]+章|第[一二三四五六七八九十百]+节|"
     r"[一二三四五六七八九十]+、|（[一二三四五六七八九十]+）|\([一二三四五六七八九十]+\)|\d+\.)"
 )
+
+
+def is_title_like(text: str) -> bool:
+    s = text.strip()
+    if not s or len(s) > 18:
+        return False
+    if re.search(r"[。！？!?]$", s):
+        return False
+    if "：" in s or ":" in s:
+        return False
+    if re.fullmatch(r"[\u4e00-\u9fffA-Za-z0-9、（）()—·\s-]+", s):
+        return True
+    return False
 
 # Resolve relative paths against the PROJECT ROOT (parent of this src/ folder).
 _HERE = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
 ROOT = os.path.dirname(_HERE)
 def _resolve(p):
     return p if os.path.isabs(p) else os.path.join(ROOT, p)
+
+
+def validate_speed(value: str | float) -> float:
+    try:
+        speed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"speed must be a positive number, got {value!r}") from exc
+    if not math.isfinite(speed) or speed <= 0:
+        raise ValueError(f"speed must be a positive finite number, got {value!r}")
+    return speed
+
+
 BOOK_FILE = _resolve(BOOK_FILE)
 REFERENCE_AUDIO = _resolve(REFERENCE_AUDIO)
 OUTPUT_DIR = _resolve(OUTPUT_DIR)
@@ -88,7 +120,10 @@ def split_sentences(paragraph: str):
     paragraph = re.sub(r"\s+", " ", paragraph).strip()
     if not paragraph:
         return []
-    return [s.strip() for s in re.split(r"(?<=[.!?…。！？；;])\s*", paragraph) if s.strip()]
+    if LABEL_LINE_RE.match(paragraph):
+        return [paragraph]
+    # German? No, treat colon as a natural pause boundary in Chinese narration.
+    return [s.strip() for s in re.split(r"(?<=[.!?…。！？；;:：])\s*", paragraph) if s.strip()]
 
 
 def split_long(sentence: str, max_chars: int):
@@ -125,17 +160,28 @@ def build_chunks(text: str, page_pause: float = 0.0):
     for page_index, page_text in enumerate(pages):
         page_chunks = []
         for para in [p for p in re.split(r"\n\s*\n", page_text) if p.strip()]:
-            if HEADING_RE.match(para.strip()):
-                heading = para.strip()
+            stripped = para.strip()
+            if HEADING_RE.match(stripped):
+                heading = stripped
                 pause = 0.8 if re.match(r"第[一二三四五六七八九十百]+章", heading) else 0.6
                 page_chunks.append((heading, pause))
+                continue
+            if is_title_like(stripped) and not page_chunks:
+                page_chunks.append((stripped, 0.6))
                 continue
             para_chunks = []
             for sentence in split_sentences(para):
                 for piece in split_long(sentence, MAX_CHARS):
                     para_chunks.append(piece.strip())
             for i, chunk_text in enumerate(para_chunks):
-                page_chunks.append((chunk_text, PARAGRAPH_PAUSE if i == len(para_chunks) - 1 else SENTENCE_PAUSE))
+                is_last = i == len(para_chunks) - 1
+                if is_last:
+                    pause = PARAGRAPH_PAUSE
+                elif chunk_text.rstrip().endswith((":", "：")):
+                    pause = COLON_PAUSE
+                else:
+                    pause = SENTENCE_PAUSE
+                page_chunks.append((chunk_text, pause))
         if page_chunks and page_index < len(pages) - 1:
             last_text, last_pause = page_chunks[-1]
             if page_pause > 0 or not HEADING_RE.match(last_text):
@@ -203,7 +249,8 @@ def main():
     parser.add_argument("--reference-text", default=None, help="Exact transcript of the reference audio")
     parser.add_argument("--reference-text-file", default=None)
     parser.add_argument("--output-dir", default=OUTPUT_DIR)
-    parser.add_argument("--speed", type=float, default=SPEED)
+    parser.add_argument("--speed", type=validate_speed, default=SPEED,
+                        help="F5-TTS speed multiplier; > 0.0, where 1.0 is the original pace")
     parser.add_argument("--nfe-step", type=int, default=NFE_STEP)
     parser.add_argument("--max-chars", type=int, default=MAX_CHARS)
     parser.add_argument("--page-pause", type=float, default=PAGE_PAUSE, help="Silence after each page, in seconds")

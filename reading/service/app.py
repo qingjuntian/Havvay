@@ -479,12 +479,15 @@ async def upload_reference(
     transcript_path = input_dir / f"ref_text_{uuid.uuid4().hex}.txt"
     transcript_path.write_text(ref_text.strip() + "\n", encoding="utf-8")
     if replacing_reference:
-        invalidated = store.invalidate_reference_dependent_artifacts(
+        invalidated = store.invalidate_reference_input_artifacts(
+            book_id, "Voice reference replaced",
+        )
+        downstream = store.invalidate_reference_dependent_artifacts(
             book_id, "Voice reference replaced",
         )
         store.add_event(
             book_id, "reference_input", "replaced", "user",
-            f"Replaced voice reference; invalidated {invalidated} dependent artifacts",
+            f"Replaced voice reference; invalidated {invalidated} source inputs and {downstream} dependent artifacts",
         )
     store.add_artifact(
         book_id, "reference_input", "voice_sample", audio_path, _sha256(audio_path),
@@ -947,6 +950,40 @@ def start_stage_job(book_id: str, stage: str) -> dict:
     return _enqueue_job(book_id, stage, task_name)
 
 
+@app.post("/api/books/{book_id}/regenerate-from-start")
+def regenerate_book_from_start(book_id: str) -> dict:
+    book = store.get_book(book_id)
+    if book is None:
+        raise HTTPException(status_code=404, detail="Book not found")
+    if store.count_active_jobs(book_id):
+        raise HTTPException(status_code=409, detail="Wait for the current processing task to finish")
+
+    reference_inputs = [
+        item for item in book["artifacts"]
+        if item["stage"] == "reference_input" and item["kind"] == "voice_sample" and not item.get("stale")
+    ]
+    if not reference_inputs:
+        raise HTTPException(status_code=409, detail="Upload a voice reference before generating audio")
+
+    has_full_audio = store.has_valid_artifact(book_id, "audiobook_mp3", ("final_audio_review",))
+    has_preview_audio = store.has_valid_artifact(book_id, "audiobook_mp3", ("preview_audio_review",))
+    if has_full_audio:
+        stage, task_name = "full_audio_update", "service.worker.synthesize_full_audio_update"
+    elif has_preview_audio:
+        stage, task_name = "preview_audio_update", "service.worker.synthesize_preview_audio_update"
+    else:
+        stage, task_name = "preview_audio", "service.worker.synthesize_preview_audio"
+
+    invalidated = store.invalidate_text_dependent_artifacts(
+        book_id, "Full audio regeneration requested without reprocessing the reference voice",
+    )
+    store.add_event(
+        book_id, "reference_input", "full_audio_regeneration", "user",
+        f"Re-generated the full audio pipeline without changing the current reference sample; invalidated {invalidated} downstream artifacts",
+    )
+    return _enqueue_job(book_id, stage, task_name)
+
+
 @app.post("/api/books/{book_id}/regenerate")
 def regenerate_book(book_id: str) -> dict:
     book = store.get_book(book_id)
@@ -1028,11 +1065,18 @@ def regenerate_book(book_id: str) -> dict:
         item for item in book["artifacts"]
         if item["stage"] == "reference_review" and item["kind"] == "processed_audio" and not item.get("stale")
     ]
-    latest_processed_reference = max(processed_references, key=lambda item: item["version"])
-    reference_is_newer = latest_reference["created_at"] > latest_audio["created_at"] if latest_audio else False
-    reference_changed = reference_is_newer or (
-        latest_processed_reference["created_at"] > latest_audio["created_at"] if latest_audio else False
+    latest_processed_reference = max(
+        processed_references,
+        key=lambda item: item["version"],
+        default=None,
     )
+    reference_changed = False
+    if latest_audio is not None:
+        reference_changed = latest_reference["created_at"] > latest_audio["created_at"]
+        if latest_processed_reference is not None:
+            reference_changed = reference_changed or (
+                latest_processed_reference["created_at"] > latest_audio["created_at"]
+            )
 
     if latest_audio is None or text_is_dirty or pronunciation_is_dirty or reference_changed:
         if has_full_audio:

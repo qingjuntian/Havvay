@@ -55,6 +55,43 @@ def _year(match: re.Match[str]) -> str:
     return "".join(DIGITS[int(digit)] for digit in match.group(1)) + "年"
 
 
+def _is_cjk_char(ch: str) -> bool:
+    return bool(ch) and ("\u3400" <= ch <= "\u9fff" or ch in "《》【】（）［］｛｝")
+
+
+def _collapse_soft_line_breaks(text: str) -> str:
+    """Collapse only obvious in-sentence wraps; preserve true paragraph boundaries."""
+    output: list[str] = []
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch in "\r\n":
+            j = i
+            newline_count = 0
+            while j < len(text) and text[j] in "\r\n":
+                newline_count += 1
+                j += 1
+            while j < len(text) and text[j] in " \t":
+                j += 1
+            if newline_count > 1:
+                output.append("\n\n")
+                i = j
+                continue
+            prev = output[-1] if output else ""
+            next_chars = text[j: j + 3]
+            next_char = next_chars.lstrip(" \t\r\n")[:1]
+            if prev and next_char and _is_cjk_char(prev) and _is_cjk_char(next_char):
+                if prev not in "，。！？；：、,.!?:;" and next_char not in "，。！？；：、,.!?:;":
+                    i = j
+                    continue
+            output.append("\n")
+            i = j
+            continue
+        output.append(ch)
+        i += 1
+    return "".join(output)
+
+
 def normalize_text(text: str) -> str:
     """Make text readable by Chinese TTS while retaining useful punctuation."""
     text = text.replace("**", "")
@@ -62,6 +99,7 @@ def normalize_text(text: str) -> str:
     text = text.replace("％", "%")
     text = re.sub(r"[ \t\f\v]+", " ", text)
     text = re.sub(r" *\r?\n *", "\n", text)
+    text = _collapse_soft_line_breaks(text)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
     text = re.sub(r"(\d{4})\s*年", _year, text)
     text = re.sub(
@@ -82,7 +120,6 @@ def normalize_text(text: str) -> str:
         lambda m: chinese_number(m.group(1)) + m.group(2),
         text,
     )
-    text = re.sub(r"(?<=[\u3400-\u9fff])[ \t]*(?:\r?\n[ \t]*|[ \t]+)(?=[\u3400-\u9fff])", "", text)
     return text
 
 

@@ -523,6 +523,40 @@ class ImageBookUploadTests(unittest.TestCase):
 
         enqueue.assert_called_once_with(book_id, "full_audio", "service.worker.synthesize_full_audio")
 
+    def test_regenerate_without_processed_reference_does_not_crash(self) -> None:
+        book_id = str(uuid.uuid4())
+        store.create_book(book_id, "无处理参考音频时仍应可生成")
+        root = store.book_directory(book_id)
+        text_path = root / "artifacts/text/v1/book.txt"
+        text_path.parent.mkdir(parents=True)
+        text_path.write_text("已确认的朗读文本。", encoding="utf-8")
+        store.add_artifact(
+            book_id, "text", "normalized_text", text_path, "text", "text/plain",
+            {"confirmed_pages": [1]},
+        )
+        pages_path = root / "artifacts/pages/book_pages.json"
+        pages_path.parent.mkdir(parents=True)
+        pages_path.write_text(json.dumps({"pages": [{"page": 1}]}), encoding="utf-8")
+        store.add_artifact(book_id, "pages", "page_metadata", pages_path, "pages", "application/json")
+        old_audio_path = root / "artifacts/final/old.mp3"
+        old_audio_path.parent.mkdir(parents=True)
+        old_audio_path.write_bytes(b"old synthesized audio")
+        store.add_artifact(
+            book_id, "final_audio_review", "audiobook_mp3", old_audio_path,
+            "old-audio", "audio/mpeg", {"page_count": 1, "text_version": 1},
+        )
+        voice_path = root / "inputs/voice.wav"
+        voice_path.parent.mkdir(parents=True)
+        voice_path.write_bytes(b"new voice")
+        store.add_artifact(book_id, "reference_input", "voice_sample", voice_path, "voice", "audio/wav")
+        store.set_book_state(book_id, "full_audio_update", "ready")
+
+        with patch("service.app.store.has_valid_artifact", return_value=True):
+            with patch("service.app._enqueue_job", return_value={"id": "fresh-audio", "status": "queued"}) as enqueue:
+                regenerate_book(book_id)
+
+        enqueue.assert_called_once_with(book_id, "full_audio", "service.worker.synthesize_full_audio")
+
     def test_pronunciation_dictionary_is_saved_and_waits_for_explicit_generation(self) -> None:
         book_id = str(uuid.uuid4())
         store.create_book(book_id, "人名读音词典")

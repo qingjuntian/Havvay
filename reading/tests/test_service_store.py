@@ -87,6 +87,18 @@ class ServiceStoreTests(unittest.TestCase):
         self.assertEqual(len(approvals), 1)
         self.assertEqual((book["current_stage"], book["status"]), ("preview_video", "queued"))
 
+    def test_create_book_initializes_schema_when_db_is_empty(self) -> None:
+        empty_db = Path(self.temporary_directory.name) / "empty.sqlite3"
+        with patch.dict(os.environ, {"READING_SERVICE_DB": str(empty_db)}, clear=False):
+            self.assertFalse(empty_db.exists())
+            empty_db.parent.mkdir(parents=True, exist_ok=True)
+            empty_db.write_bytes(b"")
+
+            store.create_book("auto-init-book", "数据库未初始化时仍可创建")
+
+            with store.connect() as db:
+                self.assertEqual(db.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'books'").fetchone()[0], "books")
+
     def test_book_text_stats_count_latest_tts_text_without_page_markers_or_whitespace(self) -> None:
         artifact_path = store.book_directory(self.book_id) / "artifacts" / "text" / "book.txt"
         artifact_path.parent.mkdir(parents=True)
@@ -222,12 +234,14 @@ class ServiceStoreTests(unittest.TestCase):
             path.write_bytes(b"artifact")
             store.add_artifact(self.book_id, stage, kind, path, filename, "application/octet-stream")
 
-        invalidated = store.invalidate_reference_dependent_artifacts(self.book_id, "Voice reference replaced")
+        source_invalidated = store.invalidate_reference_input_artifacts(self.book_id, "Voice reference replaced")
+        downstream_invalidated = store.invalidate_reference_dependent_artifacts(self.book_id, "Voice reference replaced")
         book = store.get_book(self.book_id)
         assert book is not None
         by_kind = {(item["stage"], item["kind"]): item for item in book["artifacts"]}
 
-        self.assertEqual(invalidated, 7)
+        self.assertEqual(source_invalidated, 2)
+        self.assertEqual(downstream_invalidated, 5)
         self.assertTrue(by_kind[("reference_input", "voice_sample")]["stale"])
         self.assertTrue(by_kind[("reference_review", "processed_audio")]["stale"])
         self.assertTrue(by_kind[("preview_audio_review", "audiobook_mp3")]["stale"])

@@ -764,6 +764,10 @@
             ? "页面图片有更新；只重渲染对应视频，保留现有音频。"
             : "文字或声音有更新；重新生成相应音频，审核通过后再继续视频流程。";
         section.append(element("p", "notice", detail));
+        const generateActions = element("div", "button-row");
+        generateActions.style.display = "flex";
+        generateActions.style.gap = "8px";
+        generateActions.style.flexWrap = "wrap";
         const regenerate = element(
           "button",
           "primary",
@@ -785,7 +789,23 @@
             regenerate.disabled = false;
           }
         });
-        section.append(regenerate);
+
+        const regenerateFromStart = element("button", "secondary", "重新生成全部音频");
+        regenerateFromStart.type = "button";
+        regenerateFromStart.addEventListener("click", async () => {
+          regenerateFromStart.disabled = true;
+          try {
+            const result = await api(`/api/books/${bookId}/regenerate-from-start`, { method: "POST" });
+            messageNode.textContent = result.status === "queued" ? "已加入全部音频生成队列" : result.error || "已开始重新生成全部音频";
+            await loadBooks();
+          } catch (error) {
+            messageNode.textContent = error.message;
+            regenerateFromStart.disabled = false;
+          }
+        });
+
+        generateActions.append(regenerate, regenerateFromStart);
+        section.append(generateActions);
       }
       let pageTexts = [];
       if (textArtifact) {
@@ -963,15 +983,21 @@
         }
       }
 
-      const awaitingVoiceReference = book.current_stage === "reference" && book.status === "awaiting_reference";
+      const awaitingVoiceReference = ["reference", "reference_preparation"].includes(book.current_stage)
+        && ["awaiting_reference", "ready"].includes(book.status);
       const legacyReviewCanContinue = ["pages_review", "text_review"].includes(book.current_stage)
         && ["awaiting_page_review", "awaiting_text_review"].includes(book.status);
       const existingVoiceSample = latestArtifact(book, "reference_input", "voice_sample");
       const canReplaceVoiceReference = Boolean(existingVoiceSample)
         && !["document", "pages_review", "text_review"].includes(book.current_stage);
+      const readyToReprocessReference = book.current_stage === "reference_preparation" && book.status === "ready";
       const replacingVoiceReference = canReplaceVoiceReference && !legacyReviewCanContinue;
-      if (awaitingVoiceReference || legacyReviewCanContinue || canReplaceVoiceReference) {
-        const referenceDetail = replacingVoiceReference
+      if (awaitingVoiceReference || legacyReviewCanContinue || canReplaceVoiceReference || readyToReprocessReference) {
+        const referenceDetail = readyToReprocessReference
+          ? (existingVoiceSample
+            ? "当前参考声音已准备好，可直接重新处理参考音，或上传新样本替换当前参考。"
+            : "已准备好上传参考声音；上传后会自动进入参考音处理流程。")
+          : replacingVoiceReference
           ? hasActiveJob
             ? "当前任务处理中，完成后可更换声音；更换后需重新确认参考音并生成音频/视频"
             : "更换后将重新处理参考音，旧音频和视频保留在历史中但不再作为当前成品"
