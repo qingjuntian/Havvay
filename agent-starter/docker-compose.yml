@@ -20,6 +20,8 @@ services:
       - qdrant
     volumes:
       - ./src:/app/src
+      - ./scripts:/app/scripts
+      - ./data:/app/data
 
   qdrant:
     image: qdrant/qdrant:v1.7.3
