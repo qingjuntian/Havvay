@@ -3,6 +3,13 @@
 import ast
 import math
 import re
+import os
+
+try:
+    from tavily import TavilyClient
+except ImportError:  # Keep non-search tools available without optional search dependencies.
+    TavilyClient = None
+
 
 
 def _evaluate_expression(expression: str) -> float:
@@ -54,5 +61,43 @@ class Tools:
             return f"Calculation failed: {e}"
 
     def search_web(self, query: str) -> str:
-        # placeholder for an external search tool
-        return f"search results for: {query} (stub)"
+        query = query.strip()
+        if not query:
+            return "Web search failed: query cannot be empty."
+
+        tavily_api_key = os.getenv("TAVILY_API_KEY", "").strip()
+        if not tavily_api_key:
+            return "Web search is unavailable: set TAVILY_API_KEY to enable Tavily search."
+        if TavilyClient is None:
+            return "Web search is unavailable: install tavily-python to enable Tavily search."
+
+        try:
+            response = TavilyClient(api_key=tavily_api_key).search(
+                query=query,
+                max_results=5,
+                search_depth="basic",
+            )
+        except Exception as exc:
+            return f"Web search failed: {exc}"
+
+        lines = [f"Search results for: {query}"]
+        answer = response.get("answer")
+        if answer:
+            lines.extend(["", f"Answer: {answer}"])
+
+        results = response.get("results", [])
+        for index, result in enumerate(results[:5], start=1):
+            title = result.get("title") or "Untitled result"
+            url = result.get("url") or ""
+            content = (result.get("content") or "").strip()
+            if len(content) > 500:
+                content = content[:497].rstrip() + "..."
+            lines.extend(["", f"{index}. {title}"])
+            if url:
+                lines.append(f"URL: {url}")
+            if content:
+                lines.append(content)
+
+        if not results and not answer:
+            lines.extend(["", "No results found."])
+        return "\n".join(lines)

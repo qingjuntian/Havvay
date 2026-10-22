@@ -249,6 +249,35 @@ The queue is an in-process prototype. Tasks are lost if the process restarts;
 a production deployment should replace it with a durable queue and shared
 task store.
 
+### LangGraph workflow (`/query/workflow`)
+
+An experimental LangGraph orchestration path (Phase 2 Week 7; see
+[ADR-002](docs/adr/002-langgraph-workflow-orchestration.md)) with branching,
+a model-call retry policy, persisted checkpoints, and human approval before
+tool execution:
+
+```bash
+curl -X POST http://localhost:8000/query/workflow \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"calculate 2 + 3","session_id":"demo"}'
+```
+
+Prompts routed to a tool return `202` with `status: "awaiting_approval"` and
+a `thread_id`; the run is checkpointed in SQLite
+(`LANGGRAPH_CHECKPOINT_DB`, default `data/langgraph_checkpoints.sqlite`) and
+survives restarts. Approve or reject the pending tool call with:
+
+```bash
+curl -X POST http://localhost:8000/query/workflow/<thread_id>/resume \
+  -H "Content-Type: application/json" \
+  -d '{"approved":true}'
+```
+
+Direct-answer prompts skip the gate and return `200` immediately. The model
+node retries on provider failure up to `LANGGRAPH_MAX_MODEL_ATTEMPTS`
+(default `2`) before a fallback response. The JSON response includes a
+`trace` of the executed graph nodes.
+
 ## Index documents into Qdrant
 
 The retriever reads the `agent_docs` collection. Index `.txt` and `.md` files

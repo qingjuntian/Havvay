@@ -1,15 +1,17 @@
 import logging
 import time
 import json
+import uuid
 from queue import Empty
 
-from typing import List
+from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 from .agent import Agent
+from .graph_workflow import build_graph, default_checkpointer, describe_pending
 from .planner import Executor, Planner
 from .safety import UnsafePromptError
 from .task_queue import TaskQueue, is_long_running_prompt
@@ -42,6 +44,61 @@ class QueryRequest(BaseModel):
 class TaskRequest(BaseModel):
     prompts: List[str]
     session_id: str = "default"
+
+
+class WorkflowRequest(BaseModel):
+    prompt: str
+    session_id: str = "default"
+    thread_id: Optional[str] = None
+
+
+class WorkflowResumeRequest(BaseModel):
+    approved: bool
+    session_id: str = "default"
+
+
+def _run_workflow(request_agent, thread_id: str, initial_state=None, approved=None):
+    graph = build_graph(
+        request_agent.run,
+        request_agent.tools,
+        checkpointer=default_checkpointer(),
+        interrupt_before=["human_gate"],
+    )
+    config = {"configurable": {"thread_id": thread_id}}
+    if initial_state is not None:
+        graph.invoke(initial_state, config)
+    else:
+        snapshot = graph.get_state(config)
+        if not snapshot.values or not snapshot.next:
+            return None
+        graph.update_state(
+            config,
+            {"approved": approved, "log": [f"human {'approved' if approved else 'rejected'}"]},
+            as_node="human_gate",
+        )
+        graph.invoke(None, config)
+    return graph.get_state(config)
+
+
+def _workflow_response(snapshot, request_agent, session_id: str, thread_id: str):
+    values = snapshot.values
+    if snapshot.next:
+        return JSONResponse(
+            status_code=202,
+            content={
+                "thread_id": thread_id,
+                "status": "awaiting_approval",
+                "pending": describe_pending(values),
+                "session_id": session_id,
+            },
+        )
+    return {
+        "response": values.get("response", ""),
+        "session_id": session_id,
+        "thread_id": thread_id,
+        "trace": values.get("log", []),
+        "usage": getattr(request_agent, "last_usage", {}),
+    }
 
 @app.get("/health")
 async def health():
@@ -142,6 +199,55 @@ async def query_multi_agent(req: QueryRequest):
         "session_id": req.session_id,
         "usage": getattr(request_agent, "last_usage", {}),
     }
+
+
+@app.post("/query/workflow")
+async def query_workflow(req: WorkflowRequest):
+    """LangGraph workflow: branching, model retry, and human tool approval.
+
+    Returns 200 with the final response, or 202 when the run is paused at the
+    human approval gate; resume with POST /query/workflow/{thread_id}/resume.
+    """
+    request_agent = new_request_agent()
+    try:
+        prompt = request_agent.safety.validate(req.prompt)
+        thread_id = req.thread_id or uuid.uuid4().hex
+        initial_state = {
+            "prompt": prompt,
+            "session_id": req.session_id,
+            "approved": None,
+            "attempts": 0,
+            "log": [],
+        }
+        snapshot = await run_in_threadpool(
+            _run_workflow, request_agent, thread_id, initial_state
+        )
+    except UnsafePromptError as exc:
+        logger.warning("workflow_query_rejected session_id=%s reason=%s", req.session_id, str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        logger.error("workflow_query_failed session_id=%s error=%s", req.session_id, str(exc))
+        raise HTTPException(status_code=502, detail="Upstream agent service failed.") from exc
+    except Exception as exc:
+        logger.exception("workflow_query_unexpected_failure session_id=%s", req.session_id)
+        raise HTTPException(status_code=500, detail="Internal agent error.") from exc
+    return _workflow_response(snapshot, request_agent, req.session_id, thread_id)
+
+
+@app.post("/query/workflow/{thread_id}/resume")
+async def resume_workflow(thread_id: str, req: WorkflowResumeRequest):
+    """Approve or reject a paused workflow run and resume it."""
+    request_agent = new_request_agent()
+    try:
+        snapshot = await run_in_threadpool(
+            _run_workflow, request_agent, thread_id, None, req.approved
+        )
+    except Exception as exc:
+        logger.exception("workflow_resume_unexpected_failure thread_id=%s", thread_id)
+        raise HTTPException(status_code=500, detail="Internal agent error.") from exc
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Workflow run not found or already finished.")
+    return _workflow_response(snapshot, request_agent, req.session_id, thread_id)
 
 
 @app.post("/query/stream")

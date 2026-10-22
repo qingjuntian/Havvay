@@ -12,12 +12,41 @@ Content-Type: application/json
   "session_id": "http-file-calc-test"
 }
 
+### Multi-step calculator stream
+# @name explainPlanner
+POST {{baseUrl}}/query/stream
+Content-Type: application/json
+
+{
+  "prompt": "when you get a new task, which is to analyze python project by giving you a github url, and summarize the architecture of the project, in this case, what steps would be there?",
+  "session_id": "explain_planner"
+}
+
 ### Search tool followed by a model response
 POST {{baseUrl}}/query/stream
 Content-Type: application/json
 
 {
   "prompt": "check what kind of abilities does the Agent Starter have, then summarize the results in no more than 300 characters",
+  "session_id": "agent-starter-ability"
+}
+
+### submit workflow
+# @name submitWorkflow
+POST {{baseUrl}}/query/workflow
+Content-Type: application/json
+
+{
+  "prompt": "Calculate 17 * 23, then check what kind of abilities does the Agent Starter have, then summarize the results in no more than 300 characters",
+  "session_id": "agent-starter-ability"
+}
+
+### resume workflow
+POST {{baseUrl}}/query/workflow/9432ff77ce794947965afd06ea80773f/resume
+Content-Type: application/json
+
+{
+  "approved": true,
   "session_id": "agent-starter-ability"
 }
 

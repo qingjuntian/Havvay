@@ -191,6 +191,47 @@ def test_calculator_supports_safe_arithmetic():
     assert tools.calc("calculate sqrt(16)") == "Calculation result: 4.0"
 
 
+def test_web_search_formats_tavily_results(monkeypatch):
+    class FakeTavilyClient:
+        def __init__(self, api_key):
+            assert api_key == "test-tavily-key"
+
+        def search(self, **kwargs):
+            assert kwargs == {
+                "query": "python testing",
+                "max_results": 5,
+                "search_depth": "basic",
+            }
+            return {
+                "answer": "A concise answer.",
+                "results": [
+                    {
+                        "title": "Testing guide",
+                        "url": "https://example.com/testing",
+                        "content": "How to test Python applications.",
+                    }
+                ],
+            }
+
+    monkeypatch.setenv("TAVILY_API_KEY", "test-tavily-key")
+    monkeypatch.setattr("src.tools.TavilyClient", FakeTavilyClient)
+
+    result = Tools().search_web("  python testing  ")
+
+    assert "Answer: A concise answer." in result
+    assert "1. Testing guide" in result
+    assert "URL: https://example.com/testing" in result
+    assert "How to test Python applications." in result
+
+
+def test_web_search_reports_missing_api_key(monkeypatch):
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+
+    result = Tools().search_web("python testing")
+
+    assert result == "Web search is unavailable: set TAVILY_API_KEY to enable Tavily search."
+
+
 def test_agent_stream_model_call_emits_chunks(monkeypatch):
     class FakeChunk:
         def __init__(self, text):
