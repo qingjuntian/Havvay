@@ -7,6 +7,8 @@
 **Architecture:** Modular Monolith + Independent Data Plane  
 **Primary Stack:** Python, FastAPI, PostgreSQL, Redis, HTTPX
 
+**Cross-document contract:** This document and `Billing_Ledger_Design.md` define one request and billing contract. Changes to Request, Attempt, Usage, Reservation, pricing, or settlement semantics must be reflected in both documents. Real-money traffic is prohibited until the Billing Release Gate in Section 17 passes.
+
 ---
 
 # 1. Overview
@@ -95,14 +97,15 @@ Responsible for real-time request execution:
 - Request ingress
 - Authentication
 - Authorization
+- Request validation and normalization
+- Logical model resolution
+- Candidate generation and routing
 - Policy evaluation
 - Budget reservation
-- Model resolution
-- Candidate selection
-- Routing decisions
 - Provider execution
 - Retry and fallback
-- Usage extraction
+- Attempt-level usage finalization
+- Request-level settlement handoff
 - Response delivery
 
 ## 2.2 Request Processing Architecture
@@ -126,9 +129,6 @@ Responsible for real-time request execution:
                  Authorization / Policy
                            |
                            v
-                  Budget Reservation
-                           |
-                           v
                    Model Resolution
                            |
                            v
@@ -142,6 +142,9 @@ Responsible for real-time request execution:
                            |
                            v
                    Routing Decision
+                       |
+                       v
+                  Budget Reservation
                            |
                            v
                    Provider Adapter
@@ -196,6 +199,9 @@ class GatewayRequest:
     request_id: str
     trace_id: str
 
+    idempotency_key: str | None
+    payload_hash: str
+
     organization_id: str
     team_id: str | None
     api_key_id: str
@@ -217,6 +223,8 @@ Important properties:
 - One Request has one final client-visible outcome.
 - Request identity must remain stable across retries.
 - Every Attempt must reference the parent Request.
+- A client-provided `Idempotency-Key` identifies one logical Request within a tenant and endpoint scope. A new key or an omitted key represents a new logical Request.
+- A Request has at most one designated client-visible billable Attempt. The Request outcome may be `SUCCEEDED` or `PARTIALLY_COMPLETED`; failed, ambiguous, or superseded retry Attempts do not create additional customer charges under the MVP policy.
 
 ## 3.2 RequestAttempt
 
@@ -242,6 +250,12 @@ class RequestAttempt:
     error_code: str | None
 
     latency_ms: int | None
+
+    provider_cost_record_id: str | None
+    provider_cost_schedule_version: str | None
+    provider_cost_amount: int | None
+    provider_cost_currency: str | None
+    outcome_confidence: str
 ```
 
 One logical request may produce multiple Attempts.
@@ -326,67 +340,59 @@ Provider-specific extensions should be retained in `provider_options`.
 
 ## 4.1 Request State Machine
 
+The execution lifecycle and billing lifecycle are independent state machines. The execution lifecycle is:
+
 ```text
-CREATED
-   |
-   v
-VALIDATING
-   |
-   v
-AUTHENTICATING
-   |
-   v
-AUTHORIZING
-   |
-   v
-RESERVING_BUDGET
-   |
-   v
-RESOLVING_MODEL
-   |
-   v
-ROUTING
-   |
-   v
-EXECUTING
-   |
-   +------------------+
-   |                  |
-   v                  v
-SUCCEEDED           FAILED
-   |
-   v
-SETTLEMENT_PENDING
-   |
-   v
-COMPLETED
+RECEIVED -> VALIDATING -> AUTHENTICATING -> AUTHORIZING -> RESOLVING_MODEL
+    -> FILTERING -> ROUTING -> RESERVING_BUDGET -> EXECUTING
+                                   |
+       +---------------------------+---------------------------+
+       |                           |                           |
+       v                           v                           v
+   SUCCEEDED                     FAILED                    CANCELLED
 ```
 
-Additional terminal or exceptional states:
+Validation or authorization failures terminate as `REJECTED`. If content was sent before an Attempt failed or was cancelled, the client-visible execution outcome is `PARTIALLY_COMPLETED` instead of `FAILED` or `CANCELLED`. If Provider execution may have occurred but cannot yet be confirmed, the execution outcome is `OUTCOME_UNKNOWN`; this recovery state later resolves to `SUCCEEDED`, `FAILED`, or `PARTIALLY_COMPLETED`.
 
-- REJECTED
-- CANCELLED
-- PARTIALLY_COMPLETED
-- SETTLEMENT_FAILED
+The independent billing lifecycle is:
 
-Request execution and financial settlement are separate lifecycles.
+```text
+NOT_RESERVED -> RESERVED -> SETTLEMENT_PENDING -> SETTLED
+                                  |
+                                  +-> RECONCILIATION_REQUIRED
+```
+
+Reservation occurs after routing and before the first Provider Attempt. `RECONCILIATION_REQUIRED` returns to `SETTLEMENT_PENDING` when usage and cost are resolved. Request execution and financial settlement are separate lifecycles.
 
 A request may successfully return a response while its billing settlement is still pending.
 
 The platform must not silently lose that settlement.
 
+Keep execution and billing state in separate fields. Execution states describe `SUCCEEDED`, `FAILED`, `CANCELLED`, or `PARTIALLY_COMPLETED`; billing states describe `NOT_RESERVED`, `RESERVED`, `SETTLEMENT_PENDING`, `SETTLED`, or `RECONCILIATION_REQUIRED`. A request may be returned to the client before settlement completes, but it is not financially complete until a Request-level Settlement is recorded. Reconciliation may determine a charge or an explicit zero-charge disposition; both must be persisted through that Settlement.
+
 ## 4.2 Step 1: Request Ingress
 
 Responsibilities:
 
-1. Receive HTTP request.
-2. Generate Request ID.
-3. Generate Trace ID.
-4. Validate basic HTTP structure.
-5. Parse request format.
-6. Enforce request body size limits.
-7. Extract API Key.
-8. Initialize request context.
+1. Receive HTTP request and assign a delivery ID and trace context.
+2. Validate basic HTTP structure and enforce request body size limits.
+3. Extract the API Key and optional `Idempotency-Key` header.
+4. Parse the request and compute its canonical payload hash.
+5. After authentication resolves the tenant, atomically claim or look up the tenant-scoped idempotency record.
+6. Reuse its logical Request ID for a matching existing key, or allocate a Request ID only when creating a new logical Request.
+
+For a supplied key, enforce uniqueness on `(tenant_id, endpoint, idempotency_key)`. Persist a canonical request payload hash, Request ID, execution and billing states, expiration, and a reference to the final response or replayable response data. The same key and payload resolve to the original logical Request; the same key with a different payload returns HTTP `409 Conflict`. Exclude credentials and transport-only headers from the payload hash. The header may be omitted for API compatibility, but an omitted key is a new logical Request on every HTTP submission and provides no client-retry deduplication guarantee; clients must reuse the same key when retrying an operation whose outcome is unknown.
+
+| Existing idempotent Request state | Required behavior |
+|---|---|
+| Completed and replay data retained | Return the original non-streaming response or replay the complete bounded streaming transcript without executing or charging again |
+| In progress | Return a documented in-progress response with the original Request ID or wait for the original operation; never start a second execution |
+| All Attempts are `NOT_SENT` or `REJECTED_NO_EXECUTION` | Retry may be allowed within the same Request state machine and bounded policy |
+| Provider outcome uncertain | Keep the key bound to the original Request and recover or reconcile; do not create another execution |
+| Streaming transcript unavailable or exceeds replay limit | Return the original Request ID and a documented status/result reference; never re-execute under the same key |
+| Same key, different payload hash | Return `409 Conflict` |
+
+The idempotency key record must be retained for at least the maximum request, retry, and recovery window, and must not expire while execution is non-terminal or billing is `RESERVED`, `SETTLEMENT_PENDING`, or `RECONCILIATION_REQUIRED`. The response replay payload may have a shorter, separately configured retention period and a strict size cap; after it expires, preserve the key-to-Request tombstone and return a status/result reference rather than re-executing. Expiration must not delete financial or audit records. Reusing a key after its tombstone expires creates a new logical Request and is a new billable operation; publish the retention window to API clients.
 
 Example:
 
@@ -395,12 +401,13 @@ Example:
 async def chat_completions(
     request: Request,
 ):
-    request_id = generate_request_id()
+    delivery_id = generate_delivery_id()
     trace_id = get_or_create_trace_id()
 
     context = RequestContext(
-        request_id=request_id,
+        delivery_id=delivery_id,
         trace_id=trace_id,
+        idempotency_key=request.headers.get("Idempotency-Key"),
     )
 
     return await request_service.execute(
@@ -409,7 +416,7 @@ async def chat_completions(
     )
 ```
 
-Request ID format:
+Logical Request ID format:
 
 ```text
 req_<unique_id>
@@ -418,9 +425,12 @@ req_<unique_id>
 Requirements:
 
 - Globally unique.
+- Allocated once for a new logical Request and reused for all deliveries with the same valid idempotency key and payload.
 - Stable across all provider attempts.
 - Returned in response headers.
 - Included in logs and events.
+
+Each HTTP delivery has a `delivery_id` and trace/span context. Resolve the authenticated tenant, endpoint, idempotency key, and canonical payload hash before assigning the logical Request ID. Do not expose a newly generated delivery ID as the logical Request ID on an idempotent replay.
 
 ## 4.3 Step 2: Authentication
 
@@ -504,40 +514,7 @@ Policy evaluation must happen before routing.
 
 A routing algorithm must never override security or compliance restrictions.
 
-## 4.5 Step 4: Budget Reservation
-
-Before calling an external provider, reserve the estimated maximum request cost.
-
-The reservation prevents concurrent requests from spending more than the available budget.
-
-Conceptually:
-
-```text
-Available Budget
-       |
-       v
-Estimate Maximum Request Cost
-       |
-       v
-Atomic Reservation
-       |
-       +---- Success --> Continue
-       |
-       +---- Failure --> Reject Request
-```
-
-Reservation should be transactional and idempotent.
-
-The exact reservation algorithm, database locking, settlement and reconciliation rules are defined in Design Document 02: Billing & Ledger Design.
-
-Important:
-
-- Do not reserve the same request twice.
-- Do not release a reservation before execution has definitively finished.
-- Handle crashed workers and expired reservations.
-- Keep reservation state separate from posted financial transactions.
-
-## 4.6 Step 5: Model Resolution
+## 4.5 Step 4: Model Resolution and Candidate Selection
 
 The client requests a logical model identifier.
 
@@ -575,6 +552,10 @@ The resolver must support:
 If the model does not exist or is unavailable, return a clear error.
 
 Do not silently substitute a different model unless the client has explicitly enabled that behavior.
+
+After model resolution, generate candidates and apply capability, policy, compliance, and health filters. Reject the request if no eligible deployment remains. Then resolve the immutable customer pricing policy and calculate the maximum billable exposure for the request, including configured output limits and modalities. Atomically reserve that amount before any Provider Attempt starts. Record the pricing snapshot and routing-policy version with the Request. If a later routing decision can select a deployment outside the priced candidate set, recompute or safely increase the reservation before execution.
+
+Reservation is transactional and idempotent, with one active Reservation per Request. Do not release it before all Provider Attempts are terminal and no usage or cost exposure remains unresolved. Handle crashed workers and expiration through the reconciliation rules in Design Document 02. Keep Reservation state separate from posted financial transactions.
 
 ---
 
@@ -726,9 +707,7 @@ Select the highest-priority eligible deployment.
 
 ### Lowest Cost
 
-Select the deployment with the lowest estimated customer cost or configured provider cost, according to the selected pricing objective.
-
-The optimization objective must be explicit.
+For MVP, `lowest_cost` means lowest estimated Provider Cost among eligible deployments. Customer price is determined by the logical model's Pricing Policy and does not change when routing or fallback selects another deployment. If a future product offers deployment-dependent customer prices, it must expose that as an explicit customer pricing policy and reserve for the maximum permitted price before execution.
 
 ### Weighted
 
@@ -744,7 +723,7 @@ Example:
 
 ```python
 score = (
-    cost_weight * normalized_cost
+    provider_cost_weight * normalized_provider_cost
     + latency_weight * normalized_latency
     + error_weight * normalized_error_rate
 )
@@ -762,6 +741,8 @@ Initial example weights:
 | Balanced | 40% | 30% | 30% |
 
 These weights are configuration examples, not fixed industry standards.
+
+Routing cost is the platform's estimated Provider Cost, not the customer's billable price. Customer pricing and provider cost schedules are separate, versioned data. Requests must fail closed or use an explicitly configured non-cost strategy when Provider Cost data required by a cost strategy is missing or stale.
 
 ## 5.7 Router Interface
 
@@ -899,18 +880,14 @@ Preserve the original provider error metadata for debugging, but never expose se
 
 Retry behavior must depend on the failure category.
 
-| Failure | Retry | Fallback |
-|---|---|---|
-| Connection Error | Yes | Yes |
-| Connection Timeout | Yes, bounded | Yes |
-| HTTP 429 | Conditional | Yes |
-| HTTP 500 | Conditional | Yes |
-| HTTP 502 | Yes, bounded | Yes |
-| HTTP 503 | Yes, bounded | Yes |
-| HTTP 400 | No | No |
-| Authentication Error | No | Conditional after operator intervention |
-| Permission Error | No | No |
-| Model Not Found | No | No |
+| Outcome | Retry / fallback rule |
+|---|---|
+| Failure proven before any request bytes were sent | Retry or fallback within the bounded request deadline |
+| Provider explicitly rejected the request without execution (for example, a documented 429 response) | Retry or fallback only when the Provider contract confirms no billable execution; honor `Retry-After` |
+| Provider supports idempotency and the same provider idempotency key can be reused | Retry with that same key and preserve the original Attempt identity or provider operation reference |
+| Request bytes may have been sent but no authoritative Provider outcome is available | Do not start another Attempt; mark `OUTCOME_UNKNOWN` and recover or reconcile |
+| Provider response indicates execution may have started (including ambiguous 5xx) | Do not retry unless Provider idempotency or a documented no-execution guarantee applies |
+| Invalid request, authentication, permission, or model-not-found response | Do not retry; correct the request or configuration |
 
 Always consider:
 
@@ -920,6 +897,8 @@ Always consider:
 - Provider quota.
 - Retry backoff.
 - Whether the request is safe to replay.
+
+HTTP status alone does not establish whether model execution or billing occurred. Provider-specific error mappings must classify whether execution is authoritatively `NOT_STARTED`, `REJECTED_NO_EXECUTION`, `EXECUTION_POSSIBLE`, or `COMPLETED`.
 
 ## 7.2 Retry Configuration
 
@@ -1008,13 +987,26 @@ A provider may have processed a request even when the Gateway did not receive it
 
 Therefore:
 
-- Distinguish connection failure before request transmission from ambiguous failures after transmission.
+- Persist each Attempt before dispatch and track its transmission/outcome state:
+
+```text
+CREATED -> NOT_SENT -> SENT_OUTCOME_UNKNOWN -> PROVIDER_ACCEPTED -> COMPLETED
+                  \-> REJECTED_NO_EXECUTION
+                  \-> FAILED_AFTER_EXECUTION_POSSIBLE
+```
+
+- Retry only from `NOT_SENT` or `REJECTED_NO_EXECUTION`, unless the Provider supports a stable idempotency key or explicitly guarantees no execution.
+- Treat `SENT_OUTCOME_UNKNOWN` and `FAILED_AFTER_EXECUTION_POSSIBLE` as non-retryable until recovered or reconciled.
 - Use provider idempotency support where available.
 - Record each attempt independently.
 - Do not assume a timeout means the provider did not execute the request.
 - Account for possible duplicate provider charges.
 
 The Gateway must not blindly retry every timeout.
+
+For MVP customer billing, a Request may designate at most one `billable_attempt_id`: the Attempt that produced the client-visible result. Its Request outcome may be `SUCCEEDED` or `PARTIALLY_COMPLETED`; `PARTIALLY_COMPLETED` is not an Attempt status. The designated Attempt is billable only when its usage is final or explicitly approved for estimated settlement. Failed or superseded Attempts caused by Gateway retry/fallback are recorded with their own usage observations and Provider Cost, but those Provider Costs are borne by the platform and are not passed through as additional customer charges. A customer-initiated retry with a new Request or Idempotency-Key is a separate billable Request. If an Attempt may have executed but its outcome or usage is unknown, mark it `OUTCOME_UNKNOWN`, retain its cost exposure for reconciliation, and do not start a duplicate execution under the same idempotency key.
+
+An estimated-usage disposition does not make an Attempt terminal. All Attempts must reach a terminal execution outcome before settlement or reservation release; `SENT_OUTCOME_UNKNOWN` and `FAILED_AFTER_EXECUTION_POSSIBLE` remain nonterminal until recovered or reconciled. A disposition records a resolved terminal outcome and cannot bypass unresolved provider execution.
 
 ---
 
@@ -1073,25 +1065,35 @@ async def stream_response(
 ):
 
     adapter = adapter_registry.get(deployment.adapter_type)
+    response_started = False
 
     try:
         async for chunk in adapter.stream(
             request,
             deployment,
         ):
-            yield serialize_sse(chunk)
+            event = serialize_sse(chunk)
+            response_started = True
+            yield event
 
     except asyncio.CancelledError:
         raise
 
     except ProviderError as exc:
-        yield serialize_error_event(exc)
+        if response_started:
+            yield serialize_sse_error_event(exc)
+        else:
+            raise
 
     finally:
-        await finalize_attempt()
+        await close_upstream_response()
+        await finalize_attempt_observation()
+        await request_service.finalize_execution_and_schedule_settlement()
 ```
 
-Production implementation must also explicitly close upstream response resources and release reservations or schedule settlement.
+Production implementation must explicitly close upstream response resources. Attempt finalization records execution and usage state; it must not directly release the Request Reservation.
+
+Before the first downstream SSE event, an eligible failure may use the bounded retry/fallback policy. After the first event is sent, the Gateway must not restart on another Provider or append another generation. Terminate with the documented SSE error event when the connection remains writable, record the Request as `PARTIALLY_COMPLETED`, and settle its designated client-visible billable Attempt using final usage or an explicitly approved estimate. If the client disconnects before a final usage event, retain the Reservation until the Attempt is terminal and usage is final, estimated under policy, or reconciled.
 
 ## 8.4 Client Disconnect
 
@@ -1100,10 +1102,11 @@ When the client disconnects:
 1. Detect cancellation.
 2. Cancel the upstream provider stream.
 3. Close the HTTP response.
-4. Finalize the attempt.
+4. Request cancellation of the Attempt and wait for provider/client resources to close; do not mark the Attempt terminal solely from the client disconnect.
 5. Record any available usage.
-6. Settle or estimate the corresponding cost.
-7. Release unused reservation.
+6. Finalize each Attempt's usage as provider-reported, estimated, or unknown.
+7. Settle the Request only when all Attempts are terminal and the billable Attempt's usage has a final or explicitly approved estimated disposition; otherwise mark the Request for reconciliation.
+8. Release unused reservation only within successful settlement or an explicit no-charge disposition after every Attempt is terminal and no usage or cost exposure remains unresolved.
 
 Do not assume that disconnecting the client automatically stops provider billing.
 
@@ -1132,6 +1135,8 @@ UNKNOWN
 
 Never silently treat estimated usage as provider-reported usage.
 
+Usage observations are persisted per Attempt. A provider-reported final observation is immutable; subsequent corrections are new observations linked to the original. Do not mark an Attempt terminal merely because the client disconnected or the Gateway timed out if the Provider may still be executing.
+
 ---
 
 # 9. Request Orchestration
@@ -1149,12 +1154,12 @@ class RequestService:
         context,
     ):
 
-        request = await self.validator.validate(
-            raw_request
-        )
-
         principal = await self.auth.authenticate(
             context.api_key
+        )
+
+        request = await self.validator.validate(
+            raw_request
         )
 
         policy = await self.policy.evaluate(
@@ -1162,10 +1167,22 @@ class RequestService:
             request,
         )
 
-        reservation = await self.budget.reserve(
-            principal,
-            request,
+        request = await self.idempotency.resolve_or_create(
+            principal=principal,
+            endpoint=context.endpoint,
+            idempotency_key=context.idempotency_key,
+            payload_hash=request.canonical_payload_hash,
+            request=request,
         )
+
+        if request.is_replay:
+            return request.replay_response
+
+        if request.is_in_progress:
+            return request.in_progress_response
+
+        if not request.is_new:
+            return request.current_result_or_recovery_response
 
         model = await self.model_resolver.resolve(
             request.model
@@ -1185,10 +1202,23 @@ class RequestService:
             await self.health.snapshot(candidates),
         )
 
+        pricing_snapshot = await self.pricing.resolve_customer_policy(
+            principal,
+            model,
+        )
+
+        reservation = await self.budget.reserve(
+            request=request,
+            principal=principal,
+            candidates=candidates,
+            pricing_snapshot=pricing_snapshot,
+        )
+
         return await self.execution.execute(
             request,
             decision,
             reservation,
+            pricing_snapshot,
         )
 ```
 
@@ -1257,14 +1287,19 @@ Persist the following information:
 ### Request
 
 - Request ID.
+- Tenant-scoped Idempotency-Key and canonical payload hash.
+- Execution status and independent billing status.
+- Pricing snapshot ID and Reservation ID.
 - Organization ID.
 - API Key ID.
 - Requested Model.
 - Resolved Model.
 - Request Status.
 - Stream Flag.
-- Usage.
-- Customer Cost.
+- Billable Attempt ID, selected under the billing policy; at most one per Request.
+- Usage summary projection derived from that Attempt's final Usage observation; never independently writable.
+- Customer Cost projection derived from the immutable Request-level Settlement/Charge; corrections create compensating financial entries.
+- Aggregate/projection version and last-updated timestamp so materialized summaries can be rebuilt from Attempt observations and Settlement records.
 - Latency.
 - Region.
 - Trace ID.
@@ -1280,9 +1315,11 @@ Persist the following information:
 - Deployment ID.
 - Provider Request ID.
 - Attempt Status.
+- Transmission state (`NOT_SENT`, `SENT_OUTCOME_UNKNOWN`, `PROVIDER_ACCEPTED`, `REJECTED_NO_EXECUTION`, or `COMPLETED`).
+- Outcome confidence (`CONFIRMED`, `OUTCOME_UNKNOWN`, or `RECONCILIATION_REQUIRED`).
 - Error Code.
-- Usage.
-- Provider Cost.
+- Immutable Usage observation references and Provider Cost record ID plus cost-schedule version.
+- Provider Cost amount/currency, if stored on the Attempt, are projections from the referenced Provider Cost record, not an independent source of truth.
 - Latency.
 - Start Time.
 - Completion Time.
@@ -1739,59 +1776,64 @@ Benchmark with realistic request sizes, connection durations and provider latenc
 
 # 17. MVP Implementation Plan
 
-## Phase 1: Gateway Foundation
+The phases below are release gates. Phases 1–4 may use free test credits only. Real-money traffic is prohibited until all Phase 5 acceptance criteria pass. Phase 6 capabilities are post-gate improvements and must not weaken the billing invariants.
+
+## Phase 1: API and Provider Foundation
 
 - FastAPI application.
-- Request Context.
-- Request ID / Trace ID.
+- Authentication and authorization.
+- Request Context, Request ID, and Trace ID.
 - OpenAI-compatible endpoint.
 - Unified Request / Response models.
 - Async HTTP client management.
+- Model and Deployment Registry.
+- Provider Adapter Protocol and initial providers.
+- No real-money traffic.
 
-## Phase 2: Provider Integration
+## Phase 2: Routing and Request Reliability
 
-- Provider Adapter Protocol.
-- OpenAI Adapter.
-- DeepSeek Adapter.
-- Anthropic Adapter.
-- OpenAI-compatible Adapter.
-- Streaming translation.
+- Candidate generation and capability, policy, compliance, and health filtering.
+- Priority routing and explicit provider-cost objective.
+- Request and Attempt persistence.
+- Tenant-scoped client `Idempotency-Key` behavior and payload conflict handling.
+- No real-money traffic.
 
-## Phase 3: Model and Deployment Registry
+## Phase 3: Billing Core
 
-- Model Registry.
-- Provider Registry.
-- Deployment Registry.
-- Capability metadata.
-- Provider credentials.
+- Logical-model customer pricing policy and immutable pricing snapshot.
+- Atomic Reservation after route and pricing determination.
+- Attempt-level Usage and Provider Cost observations.
+- Request-level settlement of the designated billable Attempt, including eligible `PARTIALLY_COMPLETED` Requests.
+- Immutable double-entry ledger and wallet projections.
+- No real-money traffic.
 
-## Phase 4: Routing Engine
+## Phase 4: Recovery and Streaming Reliability
 
-- Candidate Generation.
-- Capability Filtering.
-- Policy Filtering.
-- Health Filtering.
-- Priority Routing.
-- Lowest Cost Routing.
-- Weighted Routing.
+- Transactional Outbox and idempotent consumers.
+- Bounded retry and fallback with platform ownership of failed-attempt Provider Cost.
+- Streaming cancellation, usage finalization, and uncertain-outcome recovery.
+- Reconciliation for unresolved Attempts, Usage, Reservations, and settlements.
+- No real-money traffic.
 
-## Phase 5: Reliability
+## Phase 5: Production Billing Release Gate
 
-- Retry Manager.
-- Circuit Breaker.
-- Fallback.
-- Timeout Management.
-- Cancellation.
-- Error Normalization.
+- End-to-end billing integration tests against PostgreSQL.
+- Failure injection for duplicate requests, ambiguous provider timeouts, worker crashes, duplicate events, and client disconnects.
+- Concurrency tests prove reservations cannot overspend.
+- Reconciliation and ledger projection rebuild tests pass.
+- Load and streaming tests pass against defined SLOs.
+- Security review confirms tenant isolation and no secret or prompt leakage.
+- All acceptance criteria in Section 19 and Billing & Ledger Design pass.
+- Real-money traffic is allowed only after explicit release approval.
 
-## Phase 6: Observability and Usage Integration
+## Phase 6: Analytics and Advanced Routing
 
-- Request Logs.
-- Attempt Logs.
-- Routing Decision Logs.
-- OpenTelemetry.
-- Usage Events.
-- Transactional Outbox.
+- Usage, cost, and margin analytics.
+- Latency- and quality-aware routing.
+- Provider-cost optimization and quota optimization.
+- Additional providers and modalities.
+
+No phase may enable real-money traffic before Phase 5 approval.
 
 ---
 
@@ -1809,12 +1851,17 @@ Benchmark with realistic request sizes, connection durations and provider latenc
 | ADR-008 | Transactional Outbox | Reliable event publication |
 | ADR-009 | At-least-once Event Delivery | Practical distributed processing |
 | ADR-010 | Region-aware Deployment | China and global market support |
+| ADR-011 | Tenant-scoped Client Idempotency | Prevent duplicate logical executions on client retries |
+| ADR-012 | Route and Price Before Reservation | Reserve against the eligible route set and resolved customer price |
+| ADR-013 | Attempt-level Usage, Request-level Settlement | Preserve provider observations while charging one logical Request coherently |
+| ADR-014 | Platform Bears Failed Retry Cost | Do not pass internal retry/fallback failures through as customer usage charges |
+| ADR-015 | Billing Release Gate | Block real-money traffic until the end-to-end billing foundation is verified |
 
 ---
 
-# 19. MVP Acceptance Criteria
+## 19. MVP Acceptance Criteria
 
-The first implementation is considered complete when:
+The system may accept real-money traffic only when all criteria below pass:
 
 1. A client can call at least three different providers through one unified API.
 2. Both streaming and non-streaming requests work.
@@ -1831,6 +1878,16 @@ The first implementation is considered complete when:
 13. Duplicate event delivery does not produce duplicate financial effects.
 14. Sensitive credentials and prompt content are not exposed in logs.
 15. Region and compliance constraints cannot be overridden by routing preferences.
+16. The same tenant-scoped Idempotency-Key and payload cannot create a second logical Request or Provider execution.
+17. Reusing an Idempotency-Key with a different payload returns `409 Conflict`.
+18. Model resolution, candidate filtering, and customer pricing resolution occur before Reservation.
+19. Customer price is stable across Provider Deployments and fallback for the same logical model policy.
+20. Usage and Provider Cost are independently recorded per Attempt; customer settlement is idempotent and Request-scoped.
+21. Failed or superseded retry Attempts are not passed through as additional customer charges under MVP policy.
+22. An uncertain Provider outcome retains its Reservation and enters reconciliation; it is not treated as zero usage or safely replayable by default.
+23. Cached, input, output, and reasoning token billing components have documented non-overlapping semantics and provider adapter tests.
+24. Client disconnect and worker/provider timeout cannot release a Reservation while a Provider Attempt or usage outcome remains unresolved.
+25. The Phase 5 failure-injection, concurrency, reconciliation, and load tests pass before release approval.
 
 ---
 

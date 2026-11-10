@@ -6,7 +6,8 @@
 **Related document:** Request Lifecycle & Intelligent Routing Design  
 **Suggested path:** `docs/architecture/billing-and-ledger.md`
 
----
+**Cross-document contract:** This document and `Request_Lifecycle-Intelligent_Routin.md` define one request and billing contract. A Request has one customer Reservation and one Request-level customer Settlement; Provider Attempts and Usage observations are tracked independently. Real-money traffic is prohibited until both documents' Billing Release Gate criteria pass.
+
 
 ## 1. Overview
 
@@ -42,6 +43,8 @@ The billing system follows these principles:
 7. **Separate customer billing from provider cost.** Customer revenue and provider expenses are different financial dimensions.
 8. **Asynchronous reliability.** Usage processing and settlement can be asynchronous, but failures must be recoverable.
 9. **Auditable calculations.** Every charge must be explainable from its usage, pricing snapshot, and calculation details.
+10. **Stable customer pricing.** The logical model's customer Pricing Policy does not change when routing or fallback selects another Provider Deployment.
+11. **Attempt-level cost attribution.** Provider Cost is recorded for every known Attempt, including failed and superseded attempts, independently from customer charges.
 
 ### 1.3 Non-goals
 
@@ -122,29 +125,35 @@ The billing subsystem belongs to the Control Plane logically, but parts of it pa
 | Billing API | Expose balances, transactions, usage, and limits |
 | Analytics Pipeline | Produce usage and financial reporting |
 
-### 2.3 Architectural Boundary
+## 2.3 Architectural Boundary
 
-The Request Orchestrator should not directly modify wallet balances or create ledger entries.
-
-It should call explicit billing operations:
+The Request Orchestrator should not directly modify wallet balances or create ledger entries. Resolve the eligible route set and pricing snapshot first, then call explicit billing operations:
 
 ```python
 reservation = await billing_service.reserve(
     request_context=request_context,
-    estimated_cost=estimated_cost,
+    eligible_candidates=eligible_candidates,
+    pricing_snapshot=pricing_snapshot,
+    maximum_customer_exposure=maximum_customer_exposure,
 )
 
 result = await execution_engine.execute(request_context)
 
-await billing_service.record_usage(result.usage)
+for attempt_result in result.attempts:
+    await billing_service.record_attempt_usage(
+        request_id=request_context.request_id,
+        attempt_id=attempt_result.attempt_id,
+        observations=attempt_result.usage_observations,
+        provider_cost=attempt_result.provider_cost,
+    )
 
 await billing_service.settle(
+    request_id=request_context.request_id,
     reservation_id=reservation.id,
-    usage_id=result.usage.id,
 )
 ```
 
-The code is conceptual. The actual implementation must coordinate persistence, transactions, idempotency, and failure recovery.
+The code is conceptual. Candidate filtering and pricing resolution precede this call. The actual implementation must coordinate persistence, transactions, idempotency, per-Attempt observations, Request-level settlement, and failure recovery.
 
 ---
 
@@ -153,6 +162,31 @@ The code is conceptual. The actual implementation must coordinate persistence, t
 The billing domain should not be represented by a single `Transaction` table.
 
 The following entities have different lifecycles and responsibilities.
+
+### 3.0 Cross-Document Request Contract
+
+The shared contract is:
+
+```text
+Tenant + endpoint + Idempotency-Key
+       |
+       v
+        1 Request
+       |
+     1 Reservation
+       |
+  1..N Provider Attempts
+       |
+  0..N Usage observations per Attempt
+       |
+      1 Request-level Settlement
+       |
+     Immutable Ledger
+```
+
+Usage observations and Provider Cost are Attempt-scoped. The customer Charge and Settlement are Request-scoped. For MVP, persist at most one `billable_attempt_id` on each Request: the Attempt that produced the client-visible result. Usage observations do not independently select billable Attempts; any derived billable flag must agree with the parent Request's `billable_attempt_id` across every observation version. The parent Request may finish as `SUCCEEDED` or `PARTIALLY_COMPLETED`; `PARTIALLY_COMPLETED` is not an Attempt status. Billable usage must be final or have an explicitly approved estimated-usage disposition. Failed or superseded retry/fallback Attempts remain recorded for Provider Cost accounting, and retry costs caused by platform behavior are borne by the platform. An Attempt with an unresolved provider outcome remains bound to the Request, blocks another Attempt unless the Provider contract establishes safe replay, and requires reconciliation before settlement or reservation release. A customer-initiated retry using a new Request or Idempotency-Key is a separate billable Request. The Request state machine in `Request_Lifecycle-Intelligent_Routin.md` is authoritative for execution states. Request-level billing state and Reservation status are separate; their relationship is defined in Section 8.4.
+
+The API Idempotency-Key is unique on `(tenant_id, endpoint, idempotency_key)`. Persist its canonical payload hash, Request ID, state, expiry, and response replay reference. Repeated delivery with the same hash resolves to the same Request; a different hash returns `409 Conflict`. An uncertain Provider outcome stays bound to its original Request and cannot create a second execution by default. Financial operation idempotency keys remain separately scoped to their operation type and business reference.
 
 ### 3.1 Wallet
 
@@ -201,17 +235,18 @@ Represents money reserved before executing an LLM request.
 | organization_id | UUID | Organization |
 | wallet_id | UUID | Wallet |
 | request_id | UUID | Gateway request |
-| idempotency_key | VARCHAR | Unique reservation key |
+| idempotency_key | VARCHAR | Unique Reservation operation key |
 | reserved_amount | BIGINT | Original reserved amount |
 | settled_amount | BIGINT | Final customer charge |
 | released_amount | BIGINT | Released amount |
+| pricing_snapshot_id | UUID | Immutable logical-model customer pricing snapshot |
 | currency | VARCHAR(3) | Currency |
 | status | VARCHAR | Reservation state |
 | expires_at | TIMESTAMP | Expiration time |
 | created_at | TIMESTAMP | Creation time |
 | settled_at | TIMESTAMP | Settlement time |
 
-Recommended reservation states:
+`Reservation.status` is reservation-specific and is not the Request's billing state. Recommended Reservation states:
 
 ```text
 PENDING
@@ -233,25 +268,26 @@ SETTLEMENT_PENDING
 
 A reservation must be associated with exactly one request.
 
-For the MVP, use one reservation per billable request. If a request later supports multiple separately billable execution stages, model those as explicit reservation allocations rather than silently reusing the same reservation.
+For MVP, use one active Reservation per Request, created only after model resolution, candidate filtering, and customer pricing resolution. Reserve the maximum customer billable exposure over the eligible route set. Fallback does not change the customer's Pricing Policy. If an execution path may exceed the current Reservation, atomically increase it before executing that path; never silently exceed the reserved exposure.
 
-### 3.3 Usage Record
+### 3.3 Usage Observation
 
-Represents normalized usage reported or estimated for a model execution.
+Represents one immutable normalized observation of usage for one Provider Attempt. An Attempt may have provisional and final observations or later reconciled corrections; do not overwrite an earlier observation.
 
 | Field | Type | Description |
 |---|---|---|
 | id | UUID | Usage identifier |
 | request_id | UUID | Gateway request |
 | attempt_id | UUID | Provider attempt |
+| observation_version | INTEGER | Monotonic version for this Attempt |
 | organization_id | UUID | Customer organization |
 | deployment_id | UUID | Selected deployment |
 | provider | VARCHAR | Provider name |
 | model | VARCHAR | Model identifier |
-| input_tokens | BIGINT | Input tokens |
-| output_tokens | BIGINT | Output tokens |
-| cached_input_tokens | BIGINT | Cached input tokens |
-| reasoning_tokens | BIGINT | Reasoning tokens |
+| uncached_input_tokens | BIGINT | Billable input tokens excluding cached input |
+| cached_input_tokens | BIGINT | Cached input tokens; mutually exclusive with uncached input |
+| output_tokens | BIGINT | Billable output tokens under the Pricing Policy |
+| reasoning_tokens | BIGINT | Classified as included, replacement, or informational; never blindly added |
 | image_units | BIGINT | Image usage units |
 | audio_input_units | BIGINT | Audio input units |
 | audio_output_units | BIGINT | Audio output units |
@@ -265,7 +301,7 @@ Usage source:
 
 - `PROVIDER_REPORTED`
 - `GATEWAY_ESTIMATED`
-- `PROVIDER_RECONCILED`
+- `RECONCILED`
 - `UNKNOWN`
 
 Usage status:
@@ -275,7 +311,7 @@ Usage status:
 - `ESTIMATED`
 - `DISPUTED`
 
-Do not overwrite the original provider-reported usage when a later reconciliation produces a different value. Preserve the original observation and record a correction or a new version.
+Enforce uniqueness on `(attempt_id, observation_version)` and persist every observation. Do not overwrite the original provider-reported usage when reconciliation produces a different value. Provider Cost is also recorded per Attempt, including failed attempts, and is not the same as the customer Charge. Each Provider Cost record must identify its Attempt, provider cost schedule and version, currency, calculated amount, and calculation details. Any amount and currency stored on the Request Lifecycle Attempt are projections/references to this record, not an independent source of truth.
 
 A useful distinction:
 
@@ -434,24 +470,18 @@ For currencies with different minor-unit precision, use currency metadata rather
 
 ### 5.1 Customer Charge
 
-A typical token-based customer charge:
+For MVP, calculate the Request-level customer charge from the normalized usage of the Request's designated customer-billable Attempt. This can apply when the Request outcome is `SUCCEEDED` or `PARTIALLY_COMPLETED`; the latter is a Request outcome, not an Attempt status. The Attempt's usage must be final or explicitly approved for estimated settlement:
 
 \[
-C = \frac{T_{in}P_{in}}{10^6}
-+ \frac{T_{out}P_{out}}{10^6}
+C = \frac{T_{uncached}P_{in}}{10^6}
 + \frac{T_{cached}P_{cached}}{10^6}
++ \frac{T_{output}P_{out}}{10^6}
++ C_{other}
 \]
 
-Where:
+Where `T_uncached`, `T_cached`, and `T_output` are mutually exclusive billable quantities. `C_other` contains explicitly priced non-token modalities or request fees. The applicable customer prices come from the immutable logical-model Pricing Policy snapshot, not from the selected Provider Deployment.
 
-- \(T_{in}\): billable input tokens.
-- \(T_{out}\): billable output tokens.
-- \(T_{cached}\): cached input tokens.
-- \(P_{in}\): input price per million tokens.
-- \(P_{out}\): output price per million tokens.
-- \(P_{cached}\): cached input price per million tokens.
-
-This is a simplified formula. Actual pricing can include:
+Reasoning tokens must be classified by the customer Pricing Policy as either included in output tokens, a mutually exclusive output subcomponent replacing the corresponding output quantity, or informational only. They must never be added on top of a total that already includes them. Actual pricing can include:
 
 - Reasoning tokens.
 - Image processing.
@@ -467,17 +497,9 @@ This is a simplified formula. Actual pricing can include:
 
 Provider usage formats are not always identical.
 
-For example, some providers report cached input tokens as a subset of input tokens. Others report them as separate details.
+The normalized billable representation must expose mutually exclusive input buckets: `uncached_input_tokens` and `cached_input_tokens`. If a Provider reports total input including cached input, compute `uncached_input_tokens = total_input_tokens - cached_input_tokens` after validating `0 <= cached_input_tokens <= total_input_tokens`. If the Provider reports disjoint fields, map them without subtraction. Invalid or ambiguous breakdowns are marked unknown/disputed and must not be silently summed. Preserve the raw payload and the mapping version.
 
-The normalization layer must define whether each usage field is:
-
-- A subset of another field.
-- An independent billable component.
-- Informational only.
-
-Do not blindly sum every provider-reported field.
-
-Each provider adapter should translate provider-specific usage into a documented normalized representation.
+Output and reasoning token semantics follow the same rule: each token is billable in at most one bucket. Provider adapters must document and test whether reasoning is a subset of output, a disjoint component, or informational only. Every modality's normalized billable dimensions must be disjoint or have an explicit replacement rule.
 
 ### 5.3 Customer Revenue vs Provider Cost
 
@@ -497,6 +519,8 @@ Provider Cost =
     Provider Pricing × Actual Usage
 ```
 
+  Provider Cost is calculated independently per Attempt from the selected Deployment's versioned cost schedule. The customer Pricing Policy is attached to the logical Model and remains stable across routing and fallback. `lowest_cost` routing optimizes estimated Provider Cost, not customer price; missing or stale cost data must trigger an explicit configured fallback strategy or reject that routing strategy.
+
 **Gross margin:**
 
 ```text
@@ -504,8 +528,6 @@ Gross Margin = Customer Charge - Provider Cost
 ```
 
 Provider cost may be zero or unavailable for self-hosted deployments until infrastructure cost allocation is implemented.
-
-Do not assume gross margin equals net profit. It excludes infrastructure, payment processing, support, taxes, and other operational expenses.
 
 ### 5.4 Pricing Snapshot
 
@@ -556,7 +578,7 @@ Reservation prevents this overspending race.
 
 ### 6.2 Reservation Amount
 
-The reservation should conservatively estimate the maximum expected customer charge.
+Resolve the logical Model, eligible candidate set, and customer Pricing Policy before creating a Reservation. The Reservation should conservatively cover the maximum customer charge allowed by that policy and request constraints. Provider Deployment cost is not the customer reservation price.
 
 For a token-based chat request:
 
@@ -582,6 +604,8 @@ The estimate should account for:
 For models with uncertain modality costs, use a conservative estimate or require a separate usage budget.
 
 If the request does not specify a maximum output token limit, the gateway should apply a configured default or maximum. An unlimited reservation is not acceptable.
+
+For MVP, the customer price is stable across deployments and fallback for the same logical Model policy. If later features allow deployment-dependent customer prices, reserve the maximum price among every deployment the router may select, and disclose that policy to the customer before execution.
 
 ### 6.3 Reservation Algorithm
 
@@ -613,6 +637,7 @@ INSERT INTO reservations (
     wallet_id,
     request_id,
     idempotency_key,
+    pricing_snapshot_id,
     reserved_amount,
     settled_amount,
     released_amount,
@@ -625,6 +650,7 @@ VALUES (
     :wallet_id,
     :request_id,
     :idempotency_key,
+    :pricing_snapshot_id,
     :amount,
     0,
     0,
@@ -763,19 +789,19 @@ The following invariants are mandatory:
 
 ### 8.1 Settlement Flow
 
-Settlement converts a reservation into a final customer charge.
+Settlement converts one Request's Reservation into a final customer charge. Usage and Provider Cost remain Attempt-scoped; the Request charge is calculated from at most one designated client-visible Attempt under the MVP retry-cost policy. This includes a `PARTIALLY_COMPLETED` Request when that Attempt emitted client-visible content and has final or explicitly approved estimated usage. Failed or superseded Attempts are not additionally charged to the customer.
 
 ```text
-Provider Execution Completed
+All Attempts Terminal
            |
            v
-      Usage Received
+ Attempt Usage Finalized
            |
            v
     Usage Normalization
            |
            v
-   Pricing Snapshot Lookup
+ Request Charge Aggregation
            |
            v
      Charge Calculation
@@ -813,18 +839,20 @@ Then:
 \text{Additional Charge} = \max(C-R, 0)
 \]
 
+If the Request has an unresolved Attempt whose execution or billable usage may still be in progress, do not start another Attempt unless the Provider contract establishes safe replay, and do not settle or release the Reservation. Keep the Request in `RECONCILIATION_REQUIRED` (or `SETTLEMENT_PENDING`) until every Attempt is terminal and the billable Attempt's usage is final or has an explicit, auditable estimated-usage disposition. An estimated-usage disposition does not make a nonterminal Attempt terminal. `OUTCOME_UNKNOWN` and `FAILED_AFTER_EXECUTION_POSSIBLE` are nonterminal until the provider outcome is recovered or reconciled; a disposition cannot override that rule. Failed or superseded retry Attempts contribute to platform Provider Cost, not customer Charge, under the MVP policy. A Request with no customer-billable usage may release its Reservation only after every Attempt is terminal and a durable no-charge disposition is recorded; represent that disposition as a zero-charge Request Settlement so the Request billing state can become `SETTLED` without treating unknown usage as zero.
+
 The settlement transaction must atomically:
 
 1. Verify the reservation is eligible for settlement.
-2. Verify the usage record.
+2. Verify all Provider Attempts are terminal, and verify the customer-billable Attempt's final or explicitly approved estimated Usage disposition.
 3. Verify the pricing snapshot.
-4. Calculate the final charge.
+4. Calculate the Request-level final customer charge from the billable Attempt and its immutable logical-model pricing snapshot.
 5. Consume the reserved amount.
 6. Release unused reservation.
 7. Collect additional funds or record the debt according to policy.
 8. Create balanced ledger entries.
 9. Update wallet projections.
-10. Mark the reservation settled.
+10. Mark the Reservation and Request billing state settled.
 11. Write an outbox event.
 
 All financial effects must occur within a single database transaction.
@@ -834,10 +862,10 @@ All financial effects must occur within a single database transaction.
 Use a deterministic key:
 
 ```text
-settlement:{reservation_id}
+settlement:{request_id}
 ```
 
-Add a unique database constraint on the idempotency key.
+Add a unique database constraint on both the settlement idempotency key and `charges.request_id`.
 
 If a worker processes the same settlement event twice:
 
@@ -854,17 +882,7 @@ Do not put all billing states into the request's lifecycle state field.
 
 Keep these lifecycles separate:
 
-**Request lifecycle:**
-
-```text
-CREATED
-  |
-VALIDATING
-  |
-EXECUTING
-  |
-SUCCEEDED / FAILED / CANCELLED
-```
+**Request execution lifecycle:** defined by `Request_Lifecycle-Intelligent_Routin.md`, including `PARTIALLY_COMPLETED` and the recoverable `OUTCOME_UNKNOWN` state. Do not infer the financial state from the execution outcome.
 
 **Billing lifecycle:**
 
@@ -875,12 +893,20 @@ RESERVED
   |
 SETTLEMENT_PENDING
   |
-SETTLED
+  +----------> SETTLED
+  |
+  +----------> RECONCILIATION_REQUIRED
+                     |
+                     +----------> SETTLEMENT_PENDING
 ```
 
 A request can be successfully completed while billing settlement is still pending.
 
 The client response should not need to wait for every downstream analytics task, but the platform must reliably preserve the settlement obligation.
+
+The Request state machine in `Request_Lifecycle-Intelligent_Routin.md` is authoritative for execution states. This billing state machine is authoritative for reservation and financial states; neither lifecycle may be inferred from the other.
+
+The Request's `billing_state` uses the shared states above; `Reservation.status` uses the more detailed reservation states in Section 3.2. Map a committed `RESERVED` Reservation to Request `RESERVED`, settlement work in progress or a failed settlement attempt to `SETTLEMENT_PENDING`, an unresolved execution or usage outcome to `RECONCILIATION_REQUIRED`, and a completed charge or durable zero-charge disposition to `SETTLED`. `Reservation.status = RELEASED` is permitted only as part of settlement or the explicit no-charge disposition after all Attempts are terminal. `SETTLEMENT_FAILED` is operational, not a financial terminal state; it maps to `SETTLEMENT_PENDING` or `RECONCILIATION_REQUIRED` until recovery completes.
 
 ---
 
@@ -895,7 +921,7 @@ Streaming creates additional billing challenges because the gateway may not rece
 3. Forward chunks to the client.
 4. Collect provider usage if available.
 5. Finalize usage when the stream ends.
-6. Settle the reservation.
+6. Finalize the Attempt's usage observation, then settle the Request only when all Attempts are terminal.
 
 Do not write a database record for every token chunk.
 
@@ -910,8 +936,9 @@ If the client disconnects:
 3. Record the execution termination reason.
 4. Capture usage if the provider provides it.
 5. Otherwise mark usage as estimated or unknown.
-6. Settle conservatively according to the configured policy.
-7. Schedule reconciliation if necessary.
+6. If the Provider Attempt or usage outcome remains unresolved, retain the Reservation and mark the Request `RECONCILIATION_REQUIRED`.
+7. Settle or release only after every Attempt is terminal and the billable Attempt has a final or explicitly approved estimated-usage disposition.
+8. Schedule reconciliation for unknown usage or cost exposure.
 
 A client disconnect does not necessarily mean the provider stopped generating immediately.
 
@@ -937,7 +964,7 @@ Recommended policy:
 | Provider provides usage asynchronously | Reconcile when available |
 | Self-hosted provider exposes metrics | Use normalized deployment usage |
 
-The system should distinguish a charge calculated from final usage from one calculated using an estimate.
+The system should distinguish a charge calculated from final usage from one calculated using an estimate. Unknown or disputed usage is not zero usage and does not permit releasing the Reservation while the Provider may still be executing.
 
 For the MVP, avoid silently treating estimated usage as confirmed usage.
 
@@ -1046,19 +1073,23 @@ At minimum:
 
 ```sql
 CREATE UNIQUE INDEX uq_reservation_idempotency
-ON reservations (idempotency_key);
+ON reservations (request_id, idempotency_key);
 
-CREATE UNIQUE INDEX uq_settlement_reference
-ON charges (reservation_id);
+CREATE UNIQUE INDEX uq_request_idempotency
+ON gateway_requests (tenant_id, endpoint, idempotency_key);
+
+CREATE UNIQUE INDEX uq_usage_attempt_version
+ON usage_observations (attempt_id, observation_version);
+
+CREATE UNIQUE INDEX uq_request_charge
+ON charges (request_id);
 
 CREATE UNIQUE INDEX uq_ledger_idempotency
-ON ledger_transactions (idempotency_key);
+ON ledger_transactions (transaction_type, reference_type, reference_id, idempotency_key);
 
-CREATE UNIQUE INDEX uq_usage_attempt
-ON usage_records (attempt_id);
 ```
 
-The exact constraints depend on whether a request can contain multiple billable attempts or usage components.
+The exact table names may differ, but these semantics are mandatory. A Request may have multiple Attempts and multiple Usage observations per Attempt, while it has at most one customer Charge and one Settlement. Provider Cost records are keyed per Attempt and cost-schedule version. A partial unique index should also enforce at most one active Reservation per Request. For the operation-scoped ledger idempotency constraint, `transaction_type`, `reference_type`, `reference_id`, and `idempotency_key` must be non-null on financial mutation rows so SQL NULL uniqueness semantics cannot admit duplicates. Financial operation idempotency is scoped by operation and business reference as shown above; the client Request Idempotency-Key remains uniquely scoped by `(tenant_id, endpoint, idempotency_key)` as defined in the companion Request design.
 
 For more complex billing, use explicit usage versions and charge components rather than relying on a single usage row per attempt.
 
@@ -1468,49 +1499,54 @@ Run these tests against PostgreSQL, not only mocked repositories.
 
 ## 19. MVP Implementation Plan
 
-Do not build a complete enterprise billing platform in the first release.
+Do not build a complete enterprise billing platform in the first release. The phases below are release gates shared with `Request_Lifecycle-Intelligent_Routin.md`. Phases 1–4 may use free test credits only. Real-money traffic is prohibited until Phase 5 has passed and release approval is recorded.
 
-Implement the minimum reliable financial foundation.
+### Phase 1 — API and Provider Foundation
 
-### Phase 1 — Basic Wallet and Usage
+- API ingress, authentication, and authorization.
+- Model and Deployment Registry and initial Provider Adapters.
+- No real-money traffic.
 
-- Organization wallet.
-- USD only.
-- Prepaid balance.
-- Model token pricing.
-- Usage records.
-- Balance query API.
-- Basic billing dashboard.
+### Phase 2 — Routing and Request Reliability
 
-### Phase 2 — Reservation and Settlement
+- Candidate filtering and routing.
+- Request and Attempt persistence.
+- Tenant-scoped client Idempotency-Key and payload conflict behavior.
+- No real-money traffic.
 
-- Atomic budget reservation.
-- Idempotent reservation.
-- Pricing snapshots.
-- Final usage calculation.
-- Settlement.
-- Reservation release.
-- Double-entry ledger.
+### Phase 3 — Billing Core
 
-### Phase 3 — Reliability
+- Logical-model customer Pricing Policy and immutable pricing snapshot.
+- Atomic Reservation after route and pricing determination.
+- Attempt-level Usage observations and Provider Cost.
+- Request-level customer Settlement.
+- Immutable double-entry ledger and wallet projections.
+- No real-money traffic.
 
-- Transactional Outbox.
-- Settlement worker.
-- Retry and dead-letter handling.
-- Reservation expiration.
-- Reconciliation jobs.
-- Wallet projection rebuild.
-- Billing audit log.
+### Phase 4 — Recovery and Streaming Reliability
 
-### Phase 4 — Advanced Billing
+- Transactional Outbox and idempotent consumers.
+- Retry/fallback cost attribution to the platform for failed Attempts.
+- Streaming cancellation, Usage finalization, and uncertain-outcome recovery.
+- Reconciliation for unresolved Attempts, Usage, Reservations, and settlements.
+- No real-money traffic.
 
-- API-key spending limits.
-- Organization-level budgets.
-- Model-specific pricing.
-- Cached token pricing.
-- Multi-modal usage.
-- Refunds and adjustments.
-- Provider cost and gross margin analytics.
+### Phase 5 — Production Billing Release Gate
+
+- End-to-end billing integration tests against PostgreSQL.
+- Failure injection for duplicate Requests, ambiguous Provider timeouts, worker crashes, duplicate events, and client disconnects.
+- Concurrency tests prove reservations cannot overspend.
+- Reconciliation and ledger projection rebuild tests pass.
+- Token normalization tests prove billable buckets are non-overlapping.
+- Security, tenant-isolation, load, and streaming tests pass.
+- All acceptance criteria in this document and the companion Request design pass.
+- Real-money traffic is allowed only after explicit release approval.
+
+### Phase 6 — Analytics and Advanced Routing
+
+- Provider-cost and gross-margin analytics.
+- Advanced routing and cost optimization.
+- Refunds, adjustments, additional modalities, and other post-MVP billing features.
 
 ### Recommended MVP Scope
 
@@ -1526,7 +1562,10 @@ Implement the minimum reliable financial foundation.
 | Double-entry ledger | P0 |
 | Transactional Outbox | P0 |
 | Basic reconciliation | P0 |
-| Provider cost tracking | P1 |
+| Attempt-level provider cost tracking | P0 |
+| Client Request Idempotency-Key | P0 |
+| Non-overlapping usage normalization | P0 |
+| Production billing release gate | P0 |
 | Refunds and adjustments | P1 |
 | Multi-currency | P2 |
 | Subscription billing | P2 |
