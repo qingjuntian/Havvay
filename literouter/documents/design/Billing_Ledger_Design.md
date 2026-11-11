@@ -3,10 +3,10 @@
 **Document:** 02 — Billing & Ledger Design  
 **Version:** 1.0  
 **Status:** Proposed  
-**Related document:** Request Lifecycle & Intelligent Routing Design  
-**Suggested path:** `docs/architecture/billing-and-ledger.md`
+**Related documents:** Request Lifecycle & Intelligent Routing Design (01); Cross-Document Architecture Contract (03)
+**Actual path:** `documents/design/Billing_Ledger_Design.md`
 
-**Cross-document contract:** This document and `Request_Lifecycle-Intelligent_Routin.md` define one request and billing contract. A Request has one customer Reservation and one Request-level customer Settlement; Provider Attempts and Usage observations are tracked independently. Real-money traffic is prohibited until both documents' Billing Release Gate criteria pass.
+**Cross-document contract:** `Cross-Document_Architecture_Contract.md` (Document 03) is the normative authority for shared Request / Attempt / Usage / Reservation / Settlement semantics. `Request_Lifecycle-Intelligent_Routin.md` (Document 01) defines Request execution, routing, and Provider Attempt behavior. This document (Document 02) defines Usage, Reservation, Request Settlement, and Ledger behavior. Document 03 defines the shared contract. Request execution and billing are independent lifecycles; Usage and Provider Cost are Attempt-scoped; Customer Charge and Settlement are Request-scoped. A Request has one customer Reservation and one Request-level customer Settlement. Real-money traffic is prohibited until the shared Billing Release Gate in Document 03 Section 14 passes (implemented as Phase 5 in Section 19 of this document).
 
 
 ## 1. Overview
@@ -254,12 +254,12 @@ PENDING
   v
 RESERVED
   |
-  +----------> RELEASED
-  |
   v
 SETTLEMENT_PENDING
   |
-  +----------> SETTLED
+  +----------> SETTLED (positive charge)
+  |
+  +----------> RELEASED (zero-charge Settlement committed)
   |
   +----------> SETTLEMENT_FAILED
 ```
@@ -268,7 +268,7 @@ SETTLEMENT_PENDING
 
 A reservation must be associated with exactly one request.
 
-For MVP, use one active Reservation per Request, created only after model resolution, candidate filtering, and customer pricing resolution. Reserve the maximum customer billable exposure over the eligible route set. Fallback does not change the customer's Pricing Policy. If an execution path may exceed the current Reservation, atomically increase it before executing that path; never silently exceed the reserved exposure.
+For MVP, enforce exactly one Reservation per Request (unique `reservations.request_id`), created only after model resolution, candidate filtering, and customer pricing resolution; a released or settled Reservation is never replaced by a second one, and reservation increases update the existing row. Reserve the maximum customer billable exposure over the eligible route set. Fallback does not change the customer's Pricing Policy. If an execution path may exceed the current Reservation, atomically increase it before executing that path; never silently exceed the reserved exposure.
 
 ### 3.3 Usage Observation
 
@@ -358,16 +358,17 @@ For providers, maintain a separate provider cost schedule.
 
 Customer price and provider cost must not share one pricing record.
 
-A request should store a complete pricing snapshot, including:
+A request should store a complete, immutable Request-level customer pricing snapshot, including:
 
 - Pricing plan and version.
 - Customer model price.
-- Provider deployment cost schedule.
 - Currency.
 - Billing unit.
 - Effective timestamp.
 - Rounding policy.
 - Any applicable markup or discount.
+
+The Provider Deployment cost schedule is not part of this Request-level snapshot. Each Attempt that may incur provider cost references its own immutable Attempt-level Provider Cost Schedule snapshot (see Section 3.3 and Document 03 Section 5.2).
 
 This ensures a future price update cannot change an already-created charge.
 
@@ -410,6 +411,31 @@ SUM(DEBIT amounts) = SUM(CREDIT amounts)
 for each currency.
 
 Never update or delete posted ledger entries. Use a compensating transaction for corrections.
+
+### 3.6 Request Settlement
+
+The Request Settlement is the canonical, durable financial disposition of a Request — including zero-charge outcomes. A Request that entered the reserved execution workflow has exactly one Settlement; a zero-charge Settlement is explicit data, not the absence of a charge.
+
+Recommended fields (per Document 03 Section 7.1):
+
+| Field | Type | Description |
+|---|---|---|
+| id | UUID | Settlement identifier |
+| request_id | UUID | Owning Request (unique) |
+| reservation_id | UUID | Consumed Reservation (unique) |
+| billable_attempt_id | UUID | Designated billable Attempt; nullable for zero charge |
+| customer_pricing_snapshot_id | UUID | Immutable Request-level customer pricing snapshot |
+| usage_observation_id | UUID | Final or approved usage version; nullable for zero charge |
+| charge_amount | BIGINT | Settled amount in minor units (may be zero) |
+| currency | VARCHAR(3) | Currency |
+| usage_disposition | VARCHAR | FINAL / ESTIMATED_APPROVED / NO_CHARGE |
+| settlement_status | VARCHAR | Settlement state |
+| calculation_details | JSONB | Explainable calculation inputs and results |
+| idempotency_key | VARCHAR | `settlement:{request_id}` |
+| created_at | TIMESTAMP | Creation time |
+| settled_at | TIMESTAMP | Settlement time |
+
+A positive Customer Charge may be stored as a separate `charges` record or as a one-to-one financial detail of the Settlement. If `charges` remains separate, it must reference the Settlement and be unique per Request. Later corrections never modify the Settlement; they use compensating refund or adjustment transactions (Section 10).
 
 ---
 
@@ -545,16 +571,12 @@ Example:
     "input_per_million": "2.50",
     "output_per_million": "10.00"
   },
-  "provider_cost": {
-    "input_per_million": "1.80",
-    "output_per_million": "8.00"
-  },
   "rounding_policy": "HALF_UP",
   "resolved_at": "2026-11-09T10:00:00Z"
 }
 ```
 
-The values above are illustrative.
+The values above are illustrative. This is the Request-level customer pricing snapshot; it contains no provider cost data. Each Attempt instead references an immutable Attempt-level Provider Cost Schedule snapshot whose calculated result is stored in `provider_cost_records`.
 
 Persist the snapshot with the request's billing context. Do not resolve historical charges by querying the current pricing table.
 
@@ -668,7 +690,7 @@ The implementation must also:
 - Verify the wallet currency.
 - Check wallet status.
 - Validate the reservation amount.
-- Ensure a request cannot create multiple active reservations accidentally.
+- Enforce exactly one Reservation per Request via a unique constraint on `reservations.request_id`.
 - Write the corresponding ledger transaction in the same database transaction.
 
 The wallet row lock serializes reservations for the same wallet. If throughput later becomes a bottleneck, optimize using carefully designed atomic balance updates and optimistic concurrency without weakening financial invariants.
@@ -682,13 +704,13 @@ However, expiration must not release funds while the provider request may still 
 A safe expiration process:
 
 1. Find expired reservations.
-2. Verify the associated request's execution state.
-3. Confirm the request has finished, failed, or been safely cancelled.
-4. Confirm there is no unresolved provider attempt.
-5. Release the reservation if settlement is not required.
-6. Otherwise mark it for reconciliation.
+2. Verify that the Request has no committed Settlement and inspect its execution and billing states.
+3. Confirm the Request is execution-terminal, every Attempt is terminal, and no provider execution or billable usage remains unresolved.
+4. If chargeable Usage exists, run the idempotent Request Settlement using final or explicitly approved estimated Usage.
+5. If there is no customer-billable Usage, commit an explicit zero-charge Request Settlement; release the Reservation in the same transaction as the Settlement, ledger, wallet projection, Request state, and Outbox update.
+6. If any execution or usage outcome remains unresolved, retain the Reservation and mark the Request for reconciliation. Never release funds by interpreting unknown Usage as zero.
 
-Expiration is a recovery mechanism, not permission to release funds blindly.
+Expiration is a recovery trigger, not permission to bypass Request Settlement or release funds blindly.
 
 ---
 
@@ -709,6 +731,8 @@ The ledger should support at least these account types:
 | Adjustment Account | Explicit financial corrections |
 
 The exact accounting treatment may vary with the platform's legal and accounting structure. These are operational ledger accounts, not a substitute for a qualified accounting policy.
+
+For MVP, Provider Cost Records (Section 3.3) are authoritative for cost attribution and margin analytics. Attempt completion must not automatically post Provider Payable entries; provider invoice reconciliation, payable recognition, and payment are separate accounting workflows deferred to an explicit accounting ADR (Document 03 Section 5.5, ADR-036).
 
 ### 7.2 Example: Deposit $100
 
@@ -852,8 +876,9 @@ The settlement transaction must atomically:
 7. Collect additional funds or record the debt according to policy.
 8. Create balanced ledger entries.
 9. Update wallet projections.
-10. Mark the Reservation and Request billing state settled.
-11. Write an outbox event.
+10. Insert exactly one Request Settlement record, including for a zero-charge disposition.
+11. Mark the Reservation and Request billing state settled.
+12. Write an outbox event.
 
 All financial effects must occur within a single database transaction.
 
@@ -865,7 +890,7 @@ Use a deterministic key:
 settlement:{request_id}
 ```
 
-Add a unique database constraint on both the settlement idempotency key and `charges.request_id`.
+Add a unique database constraint on both the settlement idempotency key and `request_settlements.request_id`. If a separate `charges` table is used, it must reference the Settlement and remain unique per Request.
 
 If a worker processes the same settlement event twice:
 
@@ -1053,7 +1078,8 @@ Recommended MVP tables:
 | wallets | Wallet metadata and balance projections |
 | wallet_accounts | Optional account-level ledger mapping |
 | reservations | Pre-execution budget reservations |
-| usage_records | Normalized usage observations |
+| request_settlements | Canonical Request-level financial disposition, including zero charge |
+| usage_observations | Immutable normalized usage observations, versioned per Attempt |
 | pricing_plans | Customer pricing plans |
 | model_prices | Versioned customer model prices |
 | provider_cost_prices | Versioned provider cost schedules |
@@ -1081,6 +1107,9 @@ ON gateway_requests (tenant_id, endpoint, idempotency_key);
 CREATE UNIQUE INDEX uq_usage_attempt_version
 ON usage_observations (attempt_id, observation_version);
 
+CREATE UNIQUE INDEX uq_request_settlement
+ON request_settlements (request_id);
+
 CREATE UNIQUE INDEX uq_request_charge
 ON charges (request_id);
 
@@ -1089,7 +1118,7 @@ ON ledger_transactions (transaction_type, reference_type, reference_id, idempote
 
 ```
 
-The exact table names may differ, but these semantics are mandatory. A Request may have multiple Attempts and multiple Usage observations per Attempt, while it has at most one customer Charge and one Settlement. Provider Cost records are keyed per Attempt and cost-schedule version. A partial unique index should also enforce at most one active Reservation per Request. For the operation-scoped ledger idempotency constraint, `transaction_type`, `reference_type`, `reference_id`, and `idempotency_key` must be non-null on financial mutation rows so SQL NULL uniqueness semantics cannot admit duplicates. Financial operation idempotency is scoped by operation and business reference as shown above; the client Request Idempotency-Key remains uniquely scoped by `(tenant_id, endpoint, idempotency_key)` as defined in the companion Request design.
+The exact table names may differ, but these semantics are mandatory. A Request may have multiple Attempts and multiple Usage observations per Attempt, while it has at most one customer Charge and one Settlement. Provider Cost records are keyed per Attempt and cost-schedule version. A unique constraint on `reservations.request_id` enforces exactly one Reservation per reserved Request; a second Reservation is never created after release, and reservation increases update the existing row. For the operation-scoped ledger idempotency constraint, `transaction_type`, `reference_type`, `reference_id`, and `idempotency_key` must be non-null on financial mutation rows so SQL NULL uniqueness semantics cannot admit duplicates. Financial operation idempotency is scoped by operation and business reference as shown above; the client Request Idempotency-Key remains uniquely scoped by `(tenant_id, endpoint, idempotency_key)` as defined in the companion Request design.
 
 For more complex billing, use explicit usage versions and charge components rather than relying on a single usage row per attempt.
 
@@ -1180,20 +1209,26 @@ A pending settlement is normally an internal lifecycle condition, not a reason t
 
 ### 13.1 Events
 
-Suggested event types:
+Suggested event types (names and semantics follow the shared event contract in Document 03 Section 10.3):
 
 ```text
 billing.reservation.created
+billing.reservation.increased
 billing.reservation.released
-billing.usage.recorded
 billing.settlement.requested
 billing.settlement.completed
 billing.settlement.failed
+billing.reconciliation.required
+usage.observation.recorded
+usage.observation.finalized
+provider_cost.recorded
+provider_cost.reconciled
 billing.refund.created
 billing.refund.completed
 billing.adjustment.created
-billing.reconciliation.required
 ```
+
+Every durable event uses the shared envelope defined in Document 03 Section 10.2, with a globally unique `event_id`; consumers deduplicate by `(consumer_name, event_id)`.
 
 ### 13.2 Transactional Outbox
 
@@ -1213,12 +1248,14 @@ INSERT INTO ledger_transactions (...);
 INSERT INTO ledger_entries (...);
 
 INSERT INTO outbox_events (
+    event_id,
     event_type,
     aggregate_id,
     payload,
     created_at
 )
 VALUES (
+    :event_id,
     'billing.settlement.completed',
     :reservation_id,
     :payload,
@@ -1539,7 +1576,7 @@ Do not build a complete enterprise billing platform in the first release. The ph
 - Reconciliation and ledger projection rebuild tests pass.
 - Token normalization tests prove billable buckets are non-overlapping.
 - Security, tenant-isolation, load, and streaming tests pass.
-- All acceptance criteria in this document and the companion Request design pass.
+- All acceptance criteria in this document, the companion Request design, and the shared Billing Release Gate in Document 03 Section 14 (authoritative) pass.
 - Real-money traffic is allowed only after explicit release approval.
 
 ### Phase 6 — Analytics and Advanced Routing
@@ -1645,6 +1682,7 @@ Provider-specific usage normalization belongs in the provider adapter or meterin
 | ADR-028 | Use Transactional Outbox for financial events |
 | ADR-029 | Use idempotency keys for all financial mutations |
 | ADR-030 | Reconcile asynchronously and preserve audit history |
+| Accepted shared-contract decisions | See Document 03 Section 16 for the authoritative record: ADR-031–035 and ADR-037 (tenant mapping, settlement persistence, attempt status dimensions, pricing snapshots, idempotency order, reservation count) |
 
 ---
 
@@ -1657,16 +1695,17 @@ The billing subsystem is ready for MVP when:
 3. Concurrent requests cannot overspend the same wallet.
 4. Every request has an identifiable usage record or an explicit missing/unknown usage state.
 5. Customer charges use immutable pricing snapshots.
-6. A completed request can be settled exactly once financially.
-7. Unused reserved funds are released correctly.
-8. Ledger transactions always balance.
-9. Duplicate events do not produce duplicate charges.
-10. Refunds and adjustments preserve the original financial history.
-11. Worker crashes do not permanently lose settlement work.
-12. Wallet balances can be rebuilt and reconciled from ledger records.
-13. Streaming cancellation and provider failure have explicit billing behavior.
-14. Admin billing operations are auditable.
-15. Financial data is isolated between organizations.
+6. A completed request can be settled exactly once financially, recorded as exactly one Request Settlement.
+7. A request with no customer-billable usage records an explicit zero-charge Settlement instead of missing data.
+8. Unused reserved funds are released correctly.
+9. Ledger transactions always balance.
+10. Duplicate events do not produce duplicate charges.
+11. Refunds and adjustments preserve the original financial history.
+12. Worker crashes do not permanently lose settlement work.
+13. Wallet balances can be rebuilt and reconciled from ledger records.
+14. Streaming cancellation and provider failure have explicit billing behavior.
+15. Admin billing operations are auditable.
+16. Financial data is isolated between organizations.
 
 ---
 

@@ -7,7 +7,7 @@
 **Architecture:** Modular Monolith + Independent Data Plane  
 **Primary Stack:** Python, FastAPI, PostgreSQL, Redis, HTTPX
 
-**Cross-document contract:** This document and `Billing_Ledger_Design.md` define one request and billing contract. Changes to Request, Attempt, Usage, Reservation, pricing, or settlement semantics must be reflected in both documents. Real-money traffic is prohibited until the Billing Release Gate in Section 17 passes.
+**Cross-document contract:** `Cross-Document_Architecture_Contract.md` (Document 03) is the normative authority for shared Request / Attempt / Usage / Reservation / Settlement semantics. This document (Document 01) defines Request execution, routing, and Provider Attempt behavior. `Billing_Ledger_Design.md` (Document 02) defines Usage, Reservation, Request Settlement, and Ledger behavior. Document 03 defines the shared contract. Request execution and billing are independent lifecycles; Usage and Provider Cost are Attempt-scoped; Customer Charge and Settlement are Request-scoped. Real-money traffic is prohibited until the shared Billing Release Gate in Document 03 Section 14 passes (implemented as Phase 5 in Section 17 of this document).
 
 ---
 
@@ -243,6 +243,8 @@ class RequestAttempt:
     provider_model_id: str
 
     status: str
+    transmission_state: str
+    outcome_confidence: str
 
     started_at: datetime | None
     completed_at: datetime | None
@@ -255,8 +257,9 @@ class RequestAttempt:
     provider_cost_schedule_version: str | None
     provider_cost_amount: int | None
     provider_cost_currency: str | None
-    outcome_confidence: str
 ```
+
+`status`, `transmission_state`, and `outcome_confidence` are separate dimensions; their canonical enums are defined by the shared contract (Document 03 Section 3.3). `provider_cost_amount` is stored in integer minor units and is a projection of the referenced Provider Cost record.
 
 One logical request may produce multiple Attempts.
 
@@ -268,7 +271,8 @@ Request: req_123
 Attempt 1:
     Provider: Anthropic
     Deployment: anthropic-us
-    Status: TIMEOUT
+    Status: OUTCOME_UNKNOWN
+    Transmission State: SENT
 
 Attempt 2:
     Provider: Bedrock
@@ -553,9 +557,9 @@ If the model does not exist or is unavailable, return a clear error.
 
 Do not silently substitute a different model unless the client has explicitly enabled that behavior.
 
-After model resolution, generate candidates and apply capability, policy, compliance, and health filters. Reject the request if no eligible deployment remains. Then resolve the immutable customer pricing policy and calculate the maximum billable exposure for the request, including configured output limits and modalities. Atomically reserve that amount before any Provider Attempt starts. Record the pricing snapshot and routing-policy version with the Request. If a later routing decision can select a deployment outside the priced candidate set, recompute or safely increase the reservation before execution.
+After model resolution, generate candidates and apply capability, policy, compliance, and health filters. Reject the request if no eligible deployment remains. Then resolve the immutable customer pricing policy and calculate the maximum billable exposure for the request, including configured output limits and modalities. Atomically reserve that amount before any Provider Attempt starts. Record the pricing snapshot, the frozen eligible candidate set, and the routing-policy version used for the Reservation with the Request. If a later routing decision can select a deployment outside the priced candidate set, recompute or safely increase the reservation before execution.
 
-Reservation is transactional and idempotent, with one active Reservation per Request. Do not release it before all Provider Attempts are terminal and no usage or cost exposure remains unresolved. Handle crashed workers and expiration through the reconciliation rules in Design Document 02. Keep Reservation state separate from posted financial transactions.
+Reservation is transactional and idempotent, with exactly one Reservation per Request enforced by a database constraint. Do not release it before all Provider Attempts are terminal and no usage or cost exposure remains unresolved. Handle crashed workers and expiration through the reconciliation rules in Design Document 02. Keep Reservation state separate from posted financial transactions.
 
 ---
 
@@ -987,16 +991,25 @@ A provider may have processed a request even when the Gateway did not receive it
 
 Therefore:
 
-- Persist each Attempt before dispatch and track its transmission/outcome state:
+- Persist each Attempt before dispatch and track the three separate state dimensions defined by the shared contract (Document 03 Section 3.3):
 
 ```text
-CREATED -> NOT_SENT -> SENT_OUTCOME_UNKNOWN -> PROVIDER_ACCEPTED -> COMPLETED
-                  \-> REJECTED_NO_EXECUTION
-                  \-> FAILED_AFTER_EXECUTION_POSSIBLE
+Lifecycle status:
+CREATED -> DISPATCHING -> RUNNING -> SUCCEEDED | FAILED | CANCELLED
+      \-> REJECTED_NO_EXECUTION
+      \-> OUTCOME_UNKNOWN (recoverable, nonterminal)
+      \-> FAILED_AFTER_EXECUTION_POSSIBLE (recoverable, nonterminal)
+
+Transmission state:
+NOT_SENT -> SEND_STARTED -> SENT -> PROVIDER_ACCEPTED -> RESPONSE_RECEIVED
+      \-> REJECTED_NO_EXECUTION
+
+Outcome confidence:
+CONFIRMED | OUTCOME_UNKNOWN | RECONCILIATION_REQUIRED
 ```
 
-- Retry only from `NOT_SENT` or `REJECTED_NO_EXECUTION`, unless the Provider supports a stable idempotency key or explicitly guarantees no execution.
-- Treat `SENT_OUTCOME_UNKNOWN` and `FAILED_AFTER_EXECUTION_POSSIBLE` as non-retryable until recovered or reconciled.
+- Retry only when the transmission state is `NOT_SENT` or `REJECTED_NO_EXECUTION`, unless the Provider supports a stable idempotency key or explicitly guarantees no execution.
+- Treat lifecycle states `OUTCOME_UNKNOWN` and `FAILED_AFTER_EXECUTION_POSSIBLE` as non-retryable until recovered or reconciled.
 - Use provider idempotency support where available.
 - Record each attempt independently.
 - Do not assume a timeout means the provider did not execute the request.
@@ -1006,7 +1019,7 @@ The Gateway must not blindly retry every timeout.
 
 For MVP customer billing, a Request may designate at most one `billable_attempt_id`: the Attempt that produced the client-visible result. Its Request outcome may be `SUCCEEDED` or `PARTIALLY_COMPLETED`; `PARTIALLY_COMPLETED` is not an Attempt status. The designated Attempt is billable only when its usage is final or explicitly approved for estimated settlement. Failed or superseded Attempts caused by Gateway retry/fallback are recorded with their own usage observations and Provider Cost, but those Provider Costs are borne by the platform and are not passed through as additional customer charges. A customer-initiated retry with a new Request or Idempotency-Key is a separate billable Request. If an Attempt may have executed but its outcome or usage is unknown, mark it `OUTCOME_UNKNOWN`, retain its cost exposure for reconciliation, and do not start a duplicate execution under the same idempotency key.
 
-An estimated-usage disposition does not make an Attempt terminal. All Attempts must reach a terminal execution outcome before settlement or reservation release; `SENT_OUTCOME_UNKNOWN` and `FAILED_AFTER_EXECUTION_POSSIBLE` remain nonterminal until recovered or reconciled. A disposition records a resolved terminal outcome and cannot bypass unresolved provider execution.
+An estimated-usage disposition does not make an Attempt terminal. All Attempts must reach a terminal execution outcome before settlement or reservation release; Attempts in lifecycle state `OUTCOME_UNKNOWN` or `FAILED_AFTER_EXECUTION_POSSIBLE` remain nonterminal until recovered or reconciled. A disposition records a resolved terminal outcome and cannot bypass unresolved provider execution.
 
 ---
 
@@ -1162,11 +1175,9 @@ class RequestService:
             raw_request
         )
 
-        policy = await self.policy.evaluate(
-            principal,
-            request,
-        )
-
+        # Atomically claim or look up the idempotency record before
+        # policy evaluation, so a client retry can never start a
+        # second execution (Document 03 Section 8.2).
         request = await self.idempotency.resolve_or_create(
             principal=principal,
             endpoint=context.endpoint,
@@ -1175,14 +1186,26 @@ class RequestService:
             request=request,
         )
 
-        if request.is_replay:
-            return request.replay_response
-
-        if request.is_in_progress:
-            return request.in_progress_response
-
         if not request.is_new:
+            # Existing logical Request: re-authorize before disclosing
+            # replay or status data; never create another execution.
+            await self.policy.authorize_access(
+                principal,
+                request,
+            )
+
+            if request.is_replay:
+                return request.replay_response
+
+            if request.is_in_progress:
+                return request.in_progress_response
+
             return request.current_result_or_recovery_response
+
+        policy = await self.policy.evaluate(
+            principal,
+            request,
+        )
 
         model = await self.model_resolver.resolve(
             request.model
@@ -1297,7 +1320,7 @@ Persist the following information:
 - Request Status.
 - Stream Flag.
 - Billable Attempt ID, selected under the billing policy; at most one per Request.
-- Usage summary projection derived from that Attempt's final Usage observation; never independently writable.
+- Usage summary projection derived from the designated billable Attempt's Usage observation referenced by the Request Settlement, whether `FINAL` or `ESTIMATED_APPROVED`; unresolved usage remains unknown, and zero is recorded only when an explicit zero-charge Settlement establishes no customer-billable usage. Never independently writable.
 - Customer Cost projection derived from the immutable Request-level Settlement/Charge; corrections create compensating financial entries.
 - Aggregate/projection version and last-updated timestamp so materialized summaries can be rebuilt from Attempt observations and Settlement records.
 - Latency.
@@ -1314,8 +1337,8 @@ Persist the following information:
 - Provider ID.
 - Deployment ID.
 - Provider Request ID.
-- Attempt Status.
-- Transmission state (`NOT_SENT`, `SENT_OUTCOME_UNKNOWN`, `PROVIDER_ACCEPTED`, `REJECTED_NO_EXECUTION`, or `COMPLETED`).
+- Attempt lifecycle status (`CREATED`, `DISPATCHING`, `RUNNING`, `SUCCEEDED`, `FAILED`, `CANCELLED`, `REJECTED_NO_EXECUTION`, `OUTCOME_UNKNOWN`, or `FAILED_AFTER_EXECUTION_POSSIBLE`).
+- Transmission state (`NOT_SENT`, `SEND_STARTED`, `SENT`, `PROVIDER_ACCEPTED`, `RESPONSE_RECEIVED`, or `REJECTED_NO_EXECUTION`).
 - Outcome confidence (`CONFIRMED`, `OUTCOME_UNKNOWN`, or `RECONCILIATION_REQUIRED`).
 - Error Code.
 - Immutable Usage observation references and Provider Cost record ID plus cost-schedule version.
@@ -1360,28 +1383,39 @@ PostgreSQL Transaction
   Consumer      Consumer Consumer
 ```
 
-Recommended events:
+Recommended events (names and semantics follow the shared event contract in Document 03 Section 10.3):
 
 ```text
 request.created
 request.routed
 request.attempt.started
+request.attempt.completed
 request.attempt.failed
-request.attempt.succeeded
+request.outcome.unknown
 request.completed
 request.failed
 request.cancelled
 
-usage.recorded
+usage.observation.recorded
+usage.observation.finalized
+provider_cost.recorded
+provider_cost.reconciled
+
+billing.reservation.created
+billing.reservation.increased
+billing.reservation.released
 billing.settlement.requested
+billing.settlement.completed
+billing.settlement.failed
+billing.reconciliation.required
 
 provider.degraded
 provider.recovered
 ```
 
-Events should contain identifiers and necessary metadata rather than full prompts or responses.
+Every durable event uses the shared envelope defined in Document 03 Section 10.2 (`event_id`, `event_type`, `schema_version`, aggregate identifiers, tenant/request/attempt IDs, correlation and causation IDs, idempotency key). Events should contain identifiers and necessary metadata rather than full prompts or responses.
 
-Consumers must be idempotent.
+Consumers must be idempotent and deduplicate by `(consumer_name, event_id)`.
 
 ## 10.3 Event Delivery Guarantees
 
@@ -1823,7 +1857,7 @@ The phases below are release gates. Phases 1–4 may use free test credits only.
 - Reconciliation and ledger projection rebuild tests pass.
 - Load and streaming tests pass against defined SLOs.
 - Security review confirms tenant isolation and no secret or prompt leakage.
-- All acceptance criteria in Section 19 and Billing & Ledger Design pass.
+- All acceptance criteria in Section 19, Billing & Ledger Design, and the shared Billing Release Gate in Document 03 Section 14 (authoritative) pass.
 - Real-money traffic is allowed only after explicit release approval.
 
 ## Phase 6: Analytics and Advanced Routing
@@ -1856,6 +1890,7 @@ No phase may enable real-money traffic before Phase 5 approval.
 | ADR-013 | Attempt-level Usage, Request-level Settlement | Preserve provider observations while charging one logical Request coherently |
 | ADR-014 | Platform Bears Failed Retry Cost | Do not pass internal retry/fallback failures through as customer usage charges |
 | ADR-015 | Billing Release Gate | Block real-money traffic until the end-to-end billing foundation is verified |
+| Accepted shared-contract decisions | See Document 03 Section 16 for the authoritative record: ADR-031–035 and ADR-037 (tenant mapping, settlement persistence, attempt status dimensions, pricing snapshots, idempotency order, reservation count) |
 
 ---
 
