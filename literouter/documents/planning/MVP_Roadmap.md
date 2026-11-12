@@ -1,7 +1,7 @@
 # MVP Roadmap：从 0 到商业化
 
 **来源：** 提取自 `documents/DesignDiscussion/Architecture_design.md` §11
-**状态：** 项目计划参考文档
+**状态：** 项目计划参考文档， 不是真正的roadmap
 **日期：** 2026-11-12
 
 ---
