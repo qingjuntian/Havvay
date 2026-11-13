@@ -24,19 +24,23 @@ import re
 import sys
 import glob
 import time
+import shutil
 import subprocess
 
 # ----------------------------- CONFIG -----------------------------
-BOOK_FILE       = "data/book.txt"   # UTF-8 text of the book to narrate
-REFERENCE_AUDIO = "data/reference/ref_enhanced.wav" # VoiceFixer-enhanced (denoised + de-muffled, 44.1kHz). From ref.wav
+BOOK_FILE       = "/root/autodl-tmp/data/book.txt"   # UTF-8 text of the book to narrate
+REFERENCE_AUDIO = "/root/autodl-tmp/data/reference/ref_enhanced.wav" # VoiceFixer-enhanced (denoised + de-muffled, 44.1kHz). From ref.wav
 LANGUAGE        = "zh-cn"           # your book is Chinese. Use "en" for English, "ja", "ko", etc.
 OUTPUT_DIR      = "output/xtts"
-MAX_CHARS       = 80               # per-chunk cap: ~80 for zh-cn/ja/ko (XTTS limit), up to ~220 for en
+MAX_CHARS       = 60               # shorter Chinese chunks reduce drift and boundary errors
 SENTENCE_PAUSE  = 0.30            # seconds of silence inserted between chunks
 PARAGRAPH_PAUSE = 0.65           # seconds of silence at the end of a paragraph
 TEST_LIMIT      = 0               # 0 = whole book; N>0 = only the first N chunks (smoke test)
 MAKE_MP3        = True            # also encode output/audiobook.mp3
-TEMPERATURE     = 0.65           # XTTS sampling temperature (lower = steadier, higher = more expressive)
+TEMPERATURE     = 0.35           # lower temperature favors steadier pronunciation
+REPETITION_PENALTY = 5.0         # XTTS-recommended range; helps prevent repeated phrases
+ENABLE_TEXT_SPLITTING = False    # chunks are already split above; avoid a second split inside XTTS
+SPEECH_SPEED   = 0.88             # final playback speed; 1.0 is unchanged
 # ------------------------------------------------------------------
 
 SAMPLE_RATE = 24000  # XTTS-v2 output sample rate
@@ -52,25 +56,55 @@ REFERENCE_AUDIO = _resolve(REFERENCE_AUDIO)
 OUTPUT_DIR = _resolve(OUTPUT_DIR)
 CHUNK_DIR = os.path.join(OUTPUT_DIR, "chunks")
 
-# ffmpeg executable for the final concat. Prefer the trusted static build by full path.
-_FFMPEG_BIN = r"C:\Program Files\ffmpeg-master-latest-win64-gpl\bin"
-if os.path.isdir(_FFMPEG_BIN):
-    os.environ["PATH"] = _FFMPEG_BIN + os.pathsep + os.environ["PATH"]
-_FFMPEG_EXE = os.path.join(_FFMPEG_BIN, "ffmpeg.exe")
-if not os.path.isfile(_FFMPEG_EXE):
-    _FFMPEG_EXE = "ffmpeg"  # fall back to PATH (Colab/Linux)
+def _resolve_ffmpeg_executable():
+    """Find a usable ffmpeg binary on Windows or macOS/Linux."""
+    candidates = []
+    if os.name == "nt":
+        candidates.extend([
+            r"C:\Program Files\ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe",
+            r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
+            r"C:\ffmpeg\bin\ffmpeg.exe",
+            shutil.which("ffmpeg"),
+        ])
+    else:
+        candidates.extend([
+            shutil.which("ffmpeg"),
+            "/opt/homebrew/bin/ffmpeg",
+            "/usr/local/bin/ffmpeg",
+            "/usr/bin/ffmpeg",
+        ])
 
-# coqui-tts (torch>=2.9) uses torchcodec for audio IO, which needs FFmpeg *shared* libraries
-# (avutil-59/avcodec-61/avformat-61 = FFmpeg 7.1). The "-gpl" build is static (no DLLs), so we
-# register a shared build's DLLs for torchcodec. NOTE: we deliberately do NOT add this to PATH,
-# so the concat below keeps using the trusted static ffmpeg.exe -- a freshly-downloaded shared
-# ffmpeg.exe can trip Windows Defender (WinError 225).
-_FFMPEG_SHARED_BIN = r"C:\Users\qitia\ffmpeg-shared-7.1\ffmpeg-n7.1-latest-win64-gpl-shared-7.1\bin"
-if os.name == "nt" and os.path.isdir(_FFMPEG_SHARED_BIN):
-    try:
-        os.add_dll_directory(_FFMPEG_SHARED_BIN)
-    except (AttributeError, OSError):
-        pass
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if os.path.isfile(candidate):
+            ffmpeg_dir = os.path.dirname(candidate)
+            if ffmpeg_dir and ffmpeg_dir not in os.environ.get("PATH", "").split(os.pathsep):
+                os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
+            return candidate
+
+    if os.name == "nt":
+        sys.exit(
+            "[error] ffmpeg not found. Install FFmpeg, then re-run this script. "
+            "Example: winget install Gyan.Dev.FFmpeg or download a static build and add it to PATH."
+        )
+    sys.exit(
+        "[error] ffmpeg not found. Install it with: brew install ffmpeg\n"
+        "        Then run: python3 src/narrate_book.py"
+    )
+
+
+_FFMPEG_EXE = _resolve_ffmpeg_executable()
+
+# On Windows, some FFmpeg builds are static; on macOS it isn't needed. Keep the code
+# portable and avoid hard-coded Windows-only DLL registration.
+if os.name == "nt":
+    _FFMPEG_SHARED_BIN = r"C:\Users\qitia\ffmpeg-shared-7.1\ffmpeg-n7.1-latest-win64-gpl-shared-7.1\bin"
+    if os.path.isdir(_FFMPEG_SHARED_BIN):
+        try:
+            os.add_dll_directory(_FFMPEG_SHARED_BIN)
+        except (AttributeError, OSError):
+            pass
 
 
 # ----------------------------- TEXT CHUNKING -----------------------------
@@ -135,8 +169,17 @@ def build_chunks(text: str):
 # ----------------------------- AUDIO -----------------------------
 def load_model():
     """Load XTTS-v2 and return the underlying model plus precomputed speaker latents."""
-    import torch
-    from TTS.api import TTS
+    try:
+        import torch
+        from TTS.api import TTS
+    except ImportError as exc:
+        sys.exit(
+            "[error] XTTS dependencies are missing. Install them with:\n"
+            "        python3 -m pip install --upgrade pip\n"
+            "        python3 -m pip install coqui-tts soundfile\n"
+            "        Then re-run: python3 src/narrate_book.py\n"
+            f"        Import error: {exc}"
+        )
 
     os.environ.setdefault("COQUI_TOS_AGREED", "1")  # auto-accept XTTS non-commercial license
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -144,7 +187,14 @@ def load_model():
     if device == "cpu":
         print("[model] CPU detected -> generation will be slow. A full book may take many hours.")
 
-    api = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to(device)
+
+    #api = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to(device)
+    model_dir = "/root/autodl-tmp/XTTS-v2"
+    api = TTS(
+        model_path=model_dir,
+        config_path=os.path.join(model_dir, "config.json"),
+        gpu=device == "cuda",
+    )
     model = api.synthesizer.tts_model  # underlying Xtts instance
 
     if not os.path.isfile(REFERENCE_AUDIO):
@@ -167,15 +217,25 @@ def synth_chunk(model, gpt_cond_latent, speaker_embedding, text, pause_after, ou
         speaker_embedding=speaker_embedding,
         temperature=TEMPERATURE,
         length_penalty=1.0,
-        repetition_penalty=2.0,
+        repetition_penalty=REPETITION_PENALTY,
         top_k=50,
         top_p=0.85,
-        enable_text_splitting=True,
+        enable_text_splitting=ENABLE_TEXT_SPLITTING,
     )
     wav = np.asarray(out["wav"], dtype=np.float32)
     if pause_after > 0:
         wav = np.concatenate([wav, np.zeros(int(SAMPLE_RATE * pause_after), dtype=np.float32)])
-    sf.write(out_path, wav, SAMPLE_RATE, subtype="PCM_16")  # PCM_16 so ffmpeg concat -c copy works
+    if SPEECH_SPEED == 1.0:
+        sf.write(out_path, wav, SAMPLE_RATE, subtype="PCM_16")
+        return
+
+    raw_path = out_path + ".raw.wav"
+    sf.write(raw_path, wav, SAMPLE_RATE, subtype="PCM_16")
+    subprocess.run(
+        [_FFMPEG_EXE, "-y", "-i", raw_path, "-filter:a", f"atempo={SPEECH_SPEED}", out_path],
+        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    os.remove(raw_path)
 
 
 def concat_audio(chunk_paths):

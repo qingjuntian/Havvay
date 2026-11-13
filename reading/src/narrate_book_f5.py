@@ -26,24 +26,31 @@ import re
 import glob
 import time
 import subprocess
+import argparse
+import json
+from pathlib import Path
 
 # ----------------------------- CONFIG -----------------------------
 BOOK_FILE       = "data/book.txt"   # UTF-8 text to narrate
-REFERENCE_AUDIO = "data/reference/ref_f5.wav" # 10s trim of ref_enhanced.wav, matched to REF_TEXT (F5 clips refs to 12s)
+REFERENCE_AUDIO = "data/reference/919.wav" # 10s trim of ref_enhanced.wav, matched to REF_TEXT (F5 clips refs to 12s)
 # Transcript of REFERENCE_AUDIO. Providing it skips the Whisper transcription (faster, no ffmpeg-for-ASR).
 # Set to "" to auto-transcribe (needs Whisper + ffmpeg on PATH). MUST match ref.wav if you change it.
-REF_TEXT        = "孩子的成长之路是风雨交加的事实上青春期出现极端情绪是正常的。"
+REF_TEXT        = "找一个短时间可以不被打扰的地方，坐着或躺着。尽量放开束缚你的物品。"
 OUTPUT_DIR      = "output/f5"
-MAX_CHARS       = 200              # F5-TTS handles longer chunks than XTTS
+MAX_CHARS       = 100              # hard cap for one sentence or clause chunk
 SENTENCE_PAUSE  = 0.30
 PARAGRAPH_PAUSE = 0.65
-TEST_LIMIT      = 3                # 0 = whole book; N>0 = first N chunks (smoke test)
+TEST_LIMIT      = 0                 # 0 = whole book; N>0 = first N chunks (smoke test)
 MAKE_MP3        = True
 NFE_STEP        = 32               # denoising steps: higher = better/slower (16 is ~2x faster, lower quality)
-SPEED           = 1.0
+SPEED           = 1.2
 # ------------------------------------------------------------------
 
 SAMPLE_RATE = 24000
+HEADING_RE = re.compile(
+    r"^(?:第[一二三四五六七八九十百]+章|第[一二三四五六七八九十百]+节|"
+    r"[一二三四五六七八九十]+、|（[一二三四五六七八九十]+）|\([一二三四五六七八九十]+\)|\d+\.)"
+)
 
 # Resolve relative paths against the PROJECT ROOT (parent of this src/ folder).
 _HERE = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
@@ -54,6 +61,7 @@ BOOK_FILE = _resolve(BOOK_FILE)
 REFERENCE_AUDIO = _resolve(REFERENCE_AUDIO)
 OUTPUT_DIR = _resolve(OUTPUT_DIR)
 CHUNK_DIR = os.path.join(OUTPUT_DIR, "chunks")
+AUDIO_SIGNATURE = f"ref={REFERENCE_AUDIO}|nfe={NFE_STEP}|speed={SPEED}|chars={MAX_CHARS}"
 
 # Static ffmpeg on PATH (for Whisper/pydub) + a full-path exe for the concat (avoids AV issues).
 _FFMPEG_BIN = r"C:\Program Files\ffmpeg-master-latest-win64-gpl\bin"
@@ -77,7 +85,7 @@ def split_sentences(paragraph: str):
     paragraph = re.sub(r"\s+", " ", paragraph).strip()
     if not paragraph:
         return []
-    return [s.strip() for s in re.split(r"(?<=[.!?…。！？])\s*", paragraph) if s.strip()]
+    return [s.strip() for s in re.split(r"(?<=[.!?…。！？；;])\s*", paragraph) if s.strip()]
 
 
 def split_long(sentence: str, max_chars: int):
@@ -111,15 +119,15 @@ def split_long(sentence: str, max_chars: int):
 def build_chunks(text: str):
     chunks = []
     for para in [p for p in re.split(r"\n\s*\n", text) if p.strip()]:
-        buf, para_chunks = "", []
+        if HEADING_RE.match(para.strip()):
+            heading = para.strip()
+            pause = 0.8 if re.match(r"第[一二三四五六七八九十百]+章", heading) else 0.6
+            chunks.append((heading, pause))
+            continue
+        para_chunks = []
         for sentence in split_sentences(para):
             for piece in split_long(sentence, MAX_CHARS):
-                if len(buf) + len(piece) + 1 > MAX_CHARS and buf:
-                    para_chunks.append(buf.strip())
-                    buf = ""
-                buf += piece + " "
-        if buf.strip():
-            para_chunks.append(buf.strip())
+                para_chunks.append(piece.strip())
         for i, c in enumerate(para_chunks):
             chunks.append((c, PARAGRAPH_PAUSE if i == len(para_chunks) - 1 else SENTENCE_PAUSE))
     return chunks
@@ -176,6 +184,53 @@ def concat_audio(chunk_paths):
 
 # ----------------------------- MAIN -----------------------------
 def main():
+    global BOOK_FILE, REFERENCE_AUDIO, REF_TEXT, OUTPUT_DIR, CHUNK_DIR
+    global MAX_CHARS, TEST_LIMIT, MAKE_MP3, NFE_STEP, SPEED, AUDIO_SIGNATURE
+    parser = argparse.ArgumentParser(description="Generate cloned-voice audio chunks with F5-TTS.")
+    parser.add_argument("--book", default=BOOK_FILE, help="Normalized UTF-8 book text")
+    parser.add_argument("--reference-audio", default=REFERENCE_AUDIO)
+    parser.add_argument("--reference-text", default=None, help="Exact transcript of the reference audio")
+    parser.add_argument("--reference-text-file", default=None)
+    parser.add_argument("--output-dir", default=OUTPUT_DIR)
+    parser.add_argument("--speed", type=float, default=SPEED)
+    parser.add_argument("--nfe-step", type=int, default=NFE_STEP)
+    parser.add_argument("--max-chars", type=int, default=MAX_CHARS)
+    parser.add_argument("--test-limit", type=int, default=TEST_LIMIT, help="0 means all chunks")
+    parser.add_argument("--no-mp3", action="store_true")
+    parser.add_argument("--rerender-chunks", default="", help="Chunk numbers/ranges to regenerate, e.g. 22,41-43")
+    parser.add_argument("--chunk-overrides", default=None, help="JSON mapping chunk number to replacement text")
+    args = parser.parse_args()
+
+    BOOK_FILE = _resolve(args.book)
+    REFERENCE_AUDIO = _resolve(args.reference_audio)
+    if args.reference_text_file:
+        REF_TEXT = Path(_resolve(args.reference_text_file)).read_text(encoding="utf-8").strip()
+    elif args.reference_text is not None:
+        REF_TEXT = args.reference_text
+    OUTPUT_DIR = _resolve(args.output_dir)
+    CHUNK_DIR = os.path.join(OUTPUT_DIR, "chunks")
+    MAX_CHARS = args.max_chars
+    TEST_LIMIT = args.test_limit
+    MAKE_MP3 = not args.no_mp3
+    NFE_STEP = args.nfe_step
+    SPEED = args.speed
+    AUDIO_SIGNATURE = f"ref={REFERENCE_AUDIO}|nfe={NFE_STEP}|speed={SPEED}|chars={MAX_CHARS}"
+
+    def selected_chunks(spec: str) -> set[int]:
+        selected = set()
+        for part in spec.split(","):
+            if not part.strip():
+                continue
+            bounds = [int(value) for value in part.split("-", 1)]
+            selected.update(range(bounds[0], bounds[-1] + 1))
+        return selected
+
+    rerender = selected_chunks(args.rerender_chunks)
+    overrides = {}
+    if args.chunk_overrides:
+        raw = json.loads(Path(_resolve(args.chunk_overrides)).read_text(encoding="utf-8"))
+        overrides = {int(key): value for key, value in raw.get("chunks", raw).items()}
+
     if not os.path.isfile(BOOK_FILE):
         sys.exit(f"[error] {BOOK_FILE} not found.")
     os.makedirs(CHUNK_DIR, exist_ok=True)
@@ -189,6 +244,7 @@ def main():
     print(f"[plan] {len(chunks)} chunks, ~{chars:,} chars.")
 
     todo = chunks if TEST_LIMIT <= 0 else chunks[:TEST_LIMIT]
+    todo = [(overrides.get(index, text), pause) for index, (text, pause) in enumerate(todo, 1)]
     if TEST_LIMIT > 0:
         print(f"[plan] TEST_LIMIT={TEST_LIMIT} -> first {len(todo)} chunks only. Set 0 for the whole book.")
 
@@ -199,13 +255,14 @@ def main():
         out_path = os.path.join(CHUNK_DIR, f"chunk_{idx:05d}.wav")
         side_path = os.path.join(CHUNK_DIR, f"chunk_{idx:05d}.txt")
         # content-aware resume: reuse only if the audio exists AND its saved text matches this chunk
-        if (os.path.isfile(out_path) and os.path.getsize(out_path) > 0
-                and os.path.isfile(side_path)
-                and open(side_path, encoding="utf-8").read() == chunk_text):
+        expected_side = AUDIO_SIGNATURE + "\n" + chunk_text
+        if (idx not in rerender and os.path.isfile(out_path) and os.path.getsize(out_path) > 0
+            and os.path.isfile(side_path)
+            and open(side_path, encoding="utf-8").read() == expected_side):
             continue
         synth_chunk(f5, ref_audio, ref_text, chunk_text, pause_after, out_path)
         with open(side_path, "w", encoding="utf-8") as f:
-            f.write(chunk_text)
+            f.write(expected_side)
         done += 1
         avg = (time.time() - start) / done
         print(f"[{idx}/{len(todo)}] {os.path.basename(out_path)} "

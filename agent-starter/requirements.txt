@@ -1,0 +1,22 @@
+fastapi==0.99.1
+uvicorn[standard]==0.22.0
+qdrant-client>=1.19.0
+python-dotenv==1.0.0
+openai>=1.0.0
+tavily-python>=0.5.0,<1.0.0
+pydantic<2.0.0,>=1.8
+tqdm==4.66.1
+pytest==8.3.2
+httpx==0.24.1
+debugpy==1.8.8
+python-pptx>=1.0.2,<2.0.0
+# LangGraph workflow orchestration (Phase 2 Week 7 evaluation). Pinned to the
+# langgraph 0.0.x line for compatibility with pydantic v1 / FastAPI 0.99;
+# see docs/adr/002-langgraph-workflow-orchestration.md.
+langgraph==0.0.51
+langchain-core==0.1.53
+langchain==0.1.20
+# packaging pinned to satisfy langsmith<0.2 constraints
+packaging==23.2
+anyio<4.0,>=3.6
+h11<0.15,>=0.13

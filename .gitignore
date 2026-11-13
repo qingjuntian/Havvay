@@ -12,11 +12,18 @@ env/
 # Secrets / local environment (NEVER commit API keys)
 .env
 *.env
+.env.*
+!.env.example
 
 # Generated audio output (regenerable; scripts write here)
 output/
 *.zip
 
+# Local databases
+*.sqlite
+
 # OS / editor
 .DS_Store
 Thumbs.db
+.vscode/*
+!.vscode/launch.json
